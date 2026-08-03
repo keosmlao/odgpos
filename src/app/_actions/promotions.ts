@@ -1,6 +1,7 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensurePromotionsTable } from "@/lib/tables";
 import {
   normalizePromotionPayload,
@@ -52,6 +53,7 @@ const enrichItems = (items: unknown[] | unknown, nameMap: Record<string, string>
 };
 
 export async function listPromotionsAction(query = "", options: { activeOnly?: boolean } = {}): Promise<Row[]> {
+  await requireSession();
   await ensurePromotionsTable();
   const baseSql = options.activeOnly
     ? `SELECT id, item_code, barcode, promo_type, gift_code, gift_qty, buy_items, gift_items, rule_config,
@@ -78,6 +80,7 @@ export async function listPromotionsAction(query = "", options: { activeOnly?: b
 }
 
 export async function lookupPromotionAction(codeRaw: string): Promise<Row> {
+  await requireSession();
   await ensurePromotionsTable();
   const code = (codeRaw || "").trim();
   if (!code) return {};
@@ -95,6 +98,7 @@ export async function lookupPromotionAction(codeRaw: string): Promise<Row> {
 }
 
 export async function createPromotionAction(body: Row): Promise<Row> {
+  await requireSession();
   await ensurePromotionsTable();
   const payload = normalizePromotionPayload(body);
   if (!payload.promo_type) throw new Error("promo_type is required");
@@ -115,6 +119,7 @@ export async function createPromotionAction(body: Row): Promise<Row> {
 }
 
 export async function updatePromotionAction(promoId: number | string, body: Row): Promise<Row> {
+  await requireSession();
   await ensurePromotionsTable();
   const payload = normalizePromotionPayload(body);
   if (!payload.promo_type) throw new Error("promo_type is required");
@@ -138,6 +143,7 @@ export async function updatePromotionAction(promoId: number | string, body: Row)
 }
 
 export async function deletePromotionAction(promoId: number | string): Promise<{ success: true }> {
+  await requireSession();
   await ensurePromotionsTable();
   const row = await runQuery(
     "DELETE FROM pos_promotions WHERE id = $1 RETURNING id",

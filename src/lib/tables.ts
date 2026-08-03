@@ -158,3 +158,23 @@ export async function ensureDailyClosureTable() {
     created_at TIMESTAMP DEFAULT NOW()
   );`, [], "none");
 }
+
+export async function ensureStaffSalesTargetTable() {
+  await runQuery(`CREATE TABLE IF NOT EXISTS pos_staff_sales_target (
+    id SERIAL PRIMARY KEY,
+    staff_code VARCHAR(20) NOT NULL,
+    month CHAR(7) NOT NULL,
+    target_amount NUMERIC(18, 2) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+  );`, [], "none");
+  await runQuery(
+    "CREATE UNIQUE INDEX IF NOT EXISTS pos_staff_sales_target_unique_idx ON pos_staff_sales_target (staff_code, month)",
+    [], "none"
+  );
+  // Targets are defined in THB (฿); actual LAK sales are converted with the fx rate at display time.
+  await runQuery(
+    "ALTER TABLE pos_staff_sales_target ADD COLUMN IF NOT EXISTS currency VARCHAR(3) NOT NULL DEFAULT 'THB'",
+    [], "none"
+  );
+}

@@ -103,6 +103,141 @@ body.touch-pos .touch-action { padding: 14px 16px; font-size: 14px; border-radiu
 
 @keyframes shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
 
+/* ── Stock intelligence dashboard ── */
+.stock-redesign {
+  --stock-ink: #102a2a;
+  --stock-teal: #0f766e;
+  --stock-mint: #ccfbf1;
+  position: relative;
+  isolation: isolate;
+  max-width: 1680px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.stock-item-movement { order: 3; }
+.stock-recommendations { order: 4; }
+
+.stock-redesign::before {
+  content: '';
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 360px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 76% 10%, rgba(20,184,166,.12), transparent 28%),
+    radial-gradient(circle at 45% -10%, rgba(249,115,22,.08), transparent 22%);
+}
+
+.stock-hero {
+  position: relative;
+  overflow: hidden;
+  border: 0 !important;
+  padding: 26px !important;
+  color: white;
+  background:
+    radial-gradient(circle at 88% 0%, rgba(45,212,191,.24), transparent 31%),
+    linear-gradient(125deg, #102a2a 0%, #123e3b 54%, #0f766e 130%) !important;
+  box-shadow: 0 20px 55px rgba(15, 61, 58, .18) !important;
+}
+
+.stock-hero::after {
+  content: '';
+  position: absolute;
+  width: 280px;
+  height: 280px;
+  right: -100px;
+  bottom: -210px;
+  border: 42px solid rgba(255,255,255,.05);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.stock-hero-icon {
+  background: rgba(255,255,255,.12) !important;
+  border: 1px solid rgba(255,255,255,.15);
+  box-shadow: inset 0 1px rgba(255,255,255,.12), 0 12px 25px rgba(0,0,0,.16);
+}
+
+.stock-eyebrow { color: #5eead4; }
+
+.stock-hero button:not([style*="background-color"]) {
+  border-color: rgba(255,255,255,.14) !important;
+  background: rgba(255,255,255,.08) !important;
+  color: #e2e8f0 !important;
+}
+
+.stock-hero button:not([style*="background-color"]):hover {
+  background: rgba(255,255,255,.14) !important;
+}
+
+.stock-hero button[style*="background-color"] {
+  background: #f97316 !important;
+  box-shadow: 0 7px 20px rgba(249,115,22,.24);
+}
+
+.stock-hero input {
+  border-color: rgba(255,255,255,.13) !important;
+  background: rgba(255,255,255,.08) !important;
+  color: white !important;
+  color-scheme: dark;
+}
+
+.stock-stat-card {
+  position: relative;
+  overflow: hidden;
+  min-height: 146px;
+  border-color: rgba(203,213,225,.7) !important;
+  box-shadow: 0 10px 32px rgba(27,55,55,.055);
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.stock-stat-card::after {
+  content: '';
+  position: absolute;
+  inset: auto -24px -34px auto;
+  width: 88px;
+  height: 88px;
+  border: 16px solid rgba(15,118,110,.045);
+  border-radius: 50%;
+}
+
+.stock-stat-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 40px rgba(27,55,55,.09);
+}
+
+.stock-panel {
+  border-color: rgba(203,213,225,.72) !important;
+  box-shadow: 0 12px 36px rgba(27,55,55,.055) !important;
+}
+
+.stock-panel table { border-collapse: separate; border-spacing: 0; }
+.stock-panel thead tr { border: 0 !important; }
+.stock-panel thead th {
+  padding-block: 11px !important;
+  background: #f0fdfa;
+  color: #52716e !important;
+}
+.stock-panel thead th:first-child { padding-left: 12px; border-radius: 10px 0 0 10px; }
+.stock-panel thead th:last-child { padding-right: 12px; border-radius: 0 10px 10px 0; }
+.stock-panel tbody tr { transition: background .15s ease; }
+.stock-panel tbody td:first-child { padding-left: 12px; }
+.stock-panel tbody td:last-child { padding-right: 12px; }
+.stock-panel input:focus { border-color: var(--stock-teal) !important; box-shadow: 0 0 0 3px rgba(20,184,166,.1); }
+
+@media (max-width: 768px) {
+  .stock-hero { padding: 20px !important; border-radius: 22px !important; }
+  .stock-main-tabs, .stock-period { gap: 8px; }
+  .stock-period > div { width: 100%; margin-left: 0 !important; }
+  .stock-period input { min-width: 0; width: 100%; }
+  .stock-stat-card { min-height: 132px; padding: 14px !important; }
+  .stock-panel { border-radius: 22px !important; padding: 16px !important; }
+}
+
 /* ── Receipt / Slip ── */
 .slip-print-root { display: flex; justify-content: center; padding: 24px; }
 .slip-paper { width: 300px; background: #ffffff; color: #111827; border: 1px dashed #d1d5db; border-radius: 12px; padding: 16px; box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12); }

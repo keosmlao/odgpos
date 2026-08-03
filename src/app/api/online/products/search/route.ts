@@ -22,14 +22,16 @@ export async function GET(request: NextRequest) {
 
   const sql = `
 SELECT DISTINCT ON (a.ic_code) a.ic_code, c.code AS item_code, a.barcode, a.unit_code,
-  c.name_1 AS item_name, COALESCE(p.sale_price1, 0) AS sale_price1${stockSelect}, a.no_point, c.average_cost
+  c.name_1 AS item_name, COALESCE(p.sale_price1, 0) AS sale_price1${stockSelect}, a.no_point
 FROM ic_inventory_barcode a
 JOIN ic_inventory c ON c.code = a.ic_code
 LEFT JOIN (
+  -- Prefer a currently-valid price per (ic_code, unit_code); else the latest one on record.
   SELECT DISTINCT ON (ic_code, unit_code) ic_code, unit_code, sale_price1
   FROM ic_inventory_price WHERE currency_code = '02' and from_qty=1
-    AND CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)
-  ORDER BY ic_code, unit_code, from_date DESC, roworder DESC
+  ORDER BY ic_code, unit_code,
+    (CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)) DESC,
+    from_date DESC, roworder DESC
 ) p ON p.ic_code = a.ic_code AND p.unit_code = a.unit_code
 WHERE (a.barcode ILIKE $${paramIdx} OR a.ic_code ILIKE $${paramIdx + 1} OR c.name_1 ILIKE $${paramIdx + 2})
 ORDER BY a.ic_code, p.sale_price1 DESC LIMIT 50;

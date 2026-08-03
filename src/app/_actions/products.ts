@@ -1,9 +1,11 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 
-// Note: these actions match the original routes' (un-)auth posture so shop
-// pages stay reachable to unauthenticated customers. Tighten as a follow-up.
+// searchProductsAction / getProductByBarcodeAction are staff-only (POS, back office)
+// and may return cost data. getShopProductsAction / getShopPriceListAction stay
+// public for the customer shop and must never expose cost columns.
 
 type Row = Record<string, unknown>;
 
@@ -11,7 +13,7 @@ export async function searchProductsAction(
   queryRaw: string,
   options: { wh_code?: string; location_code?: string; include_stock?: boolean } = {}
 ): Promise<Row[]> {
-
+  await requireSession();
   const query = (queryRaw || "").trim();
   if (!query) return [];
   const whCode = options.wh_code || "1105";
@@ -56,11 +58,13 @@ LEFT JOIN LATERAL (
   SELECT barcode, unit_code, no_point FROM ic_inventory_barcode WHERE ic_code = ic.code LIMIT 1
 ) b ON TRUE
 LEFT JOIN LATERAL (
+  -- Prefer a currently-valid price; if none, fall back to the latest price on record.
   SELECT sale_price1 FROM ic_inventory_price
   WHERE ic_code = ic.code AND unit_code = COALESCE(b.unit_code, 'EA')
     AND currency_code = '02' AND from_qty = 1
-    AND CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)
-  ORDER BY from_date DESC, roworder DESC LIMIT 1
+  ORDER BY (CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)) DESC,
+           from_date DESC, roworder DESC
+  LIMIT 1
 ) p ON TRUE
 WHERE (ic.code LIKE $${idx} OR ic.name_1 ILIKE $${idx + 1})
 ORDER BY ic.code
@@ -74,7 +78,7 @@ export async function getProductByBarcodeAction(
   qty = 1,
   options: { wh_code?: string; location_code?: string } = {}
 ): Promise<Row | null> {
-
+  await requireSession();
   if (!barcode) return null;
   const whCode = options.wh_code || "1105";
   const locationCode = options.location_code || "110501";
@@ -91,9 +95,9 @@ export async function getProductByBarcodeAction(
               ON b.ic_code = a.ic_code AND b.unit_code = a.unit_code
              AND p.qty BETWEEN b.from_qty AND COALESCE(b.to_qty, 999999)
              AND b.currency_code = '02'
-             AND current_date BETWEEN b.from_date AND COALESCE(b.to_date, current_date)
       WHERE a.barcode = $2
-      ORDER BY b.roworder DESC NULLS LAST
+      ORDER BY (current_date BETWEEN b.from_date AND COALESCE(b.to_date, current_date)) DESC NULLS LAST,
+               b.from_date DESC NULLS LAST, b.roworder DESC NULLS LAST
       LIMIT 1;`,
     [qty, barcode]
   )) as Row[];
@@ -124,7 +128,7 @@ export async function getProductByIdAction(_id: string): Promise<null> {
 export async function getShopProductsAction(): Promise<Row[]> {
 
   return (await runQuery(`
-SELECT a.ic_code, ic.name_1 AS ic_name, a.balance_qty, ic.unit_cost, ic.average_cost,
+SELECT a.ic_code, ic.name_1 AS ic_name, a.balance_qty,
   cat.name_1  AS cat_name,
   grp.name_1  AS group_name,
   sub.name_1  AS sub_group_name,

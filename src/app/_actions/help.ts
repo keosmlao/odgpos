@@ -1,6 +1,7 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensureHelpContentTable } from "@/lib/tables";
 import { HELP_FALLBACK, normalizeHelpSections, normalizeHelpContact } from "@/lib/utils";
 
@@ -23,6 +24,7 @@ export async function getHelpAction(): Promise<Row> {
 }
 
 export async function saveHelpAction(payload: Row): Promise<Row> {
+  await requireSession();
   await ensureHelpContentTable();
   const title = String(payload.title || HELP_FALLBACK.title).trim();
   const subtitle = String(payload.subtitle || HELP_FALLBACK.subtitle).trim();

@@ -50,11 +50,11 @@ function ChipRow({
   return (
     <button
       onClick={onClick}
-      className={`group w-full flex items-center gap-2.5 h-11 px-3 rounded-xl border bg-white text-left transition-colors ${
-        required ? "border-amber-300 bg-amber-50/40" : "border-slate-200 hover:border-slate-300"
+      className={`group w-full flex items-center gap-3 min-h-14 px-3.5 rounded-2xl border bg-white text-left transition-all ${
+        required ? "border-amber-300 bg-amber-50/60 shadow-sm" : "border-slate-200 hover:border-indigo-300 hover:shadow-sm"
       }`}
     >
-      <div className={`w-7 h-7 rounded-lg flex items-center justify-center ${hasValue ? "bg-slate-100 text-slate-700" : "bg-slate-50 text-slate-400"}`}>
+      <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${hasValue ? "bg-indigo-50 text-indigo-700" : "bg-slate-50 text-slate-400"}`}>
         <Icon size={14} strokeWidth={2} />
       </div>
       <div className="flex-1 min-w-0">
@@ -85,8 +85,8 @@ function ChipRow({
 function TotalsRow({ label, value, hint, negative = false }: { label: string; value: string | number; hint?: string; negative?: boolean }) {
   return (
     <div className="flex items-baseline justify-between py-1">
-      <div className="text-[12px] text-slate-500 font-medium">{label}{hint ? <span className="text-slate-300 ml-1">· {hint}</span> : null}</div>
-      <div className={`text-[13px] font-bold tabular-nums ${negative ? "text-rose-600" : "text-slate-800"}`}>
+      <div className="text-[12px] text-slate-400 font-medium">{label}{hint ? <span className="text-slate-500 ml-1">· {hint}</span> : null}</div>
+      <div className={`text-[13px] font-bold tabular-nums ${negative ? "text-rose-400" : "text-slate-200"}`}>
         {typeof value === "number" ? fmt(value) : value}
       </div>
     </div>
@@ -103,7 +103,11 @@ function PanelBody(props: Props) {
   const memberPct = hasMember && selectedMember?.discount ? `${selectedMember.discount}%` : null;
 
   return (
-    <div className="flex flex-col gap-3 p-3">
+    <div className="flex flex-col gap-4 p-4">
+      <div className="flex items-center justify-between px-1">
+        <div><p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-600">Checkout</p><h2 className="text-[17px] font-black text-slate-900">ສະຫຼຸບການຂາຍ</h2></div>
+        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700 ring-1 ring-emerald-100">ພ້ອມຂາຍ</span>
+      </div>
       {/* Identity */}
       <section className="space-y-2">
         <ChipRow icon={User} label="Cashier" value={cashierName} />
@@ -127,7 +131,7 @@ function PanelBody(props: Props) {
       </section>
 
       {/* THB rate */}
-      <section className="rounded-xl bg-white border border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
+      <section className="rounded-2xl bg-white border border-slate-200 px-3.5 py-3 flex items-center justify-between gap-2">
         <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400">THB / ₭ Rate</div>
         <input
           type="text"
@@ -139,15 +143,15 @@ function PanelBody(props: Props) {
       </section>
 
       {/* Totals */}
-      <section className="rounded-2xl bg-white border border-slate-200 p-4 space-y-1">
+      <section className="rounded-3xl bg-slate-950 text-white p-5 space-y-1 shadow-xl shadow-slate-950/10">
         <TotalsRow label="Subtotal" value={subtotal} />
         {promoDiscount > 0 ? <TotalsRow label="Promo" value={-promoDiscount} hint="auto" negative /> : null}
         {memberDiscount > 0 ? <TotalsRow label="Member" value={-memberDiscount} hint={`${selectedMember?.discount ?? 0}%`} negative /> : null}
         <div className="my-2 h-px bg-slate-100" />
         <div className="flex items-baseline justify-between">
-          <div className="text-[12px] font-bold uppercase tracking-wider text-slate-500">Total</div>
-          <div className="text-2xl font-black tabular-nums text-slate-900">
-            {fmt(total)} <span className="text-[12px] text-slate-400 font-bold">₭</span>
+          <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-slate-400">ລວມທັງໝົດ</div>
+          <div className="text-3xl font-black tabular-nums text-white tracking-tight">
+            {fmt(total)} <span className="text-[13px] text-indigo-300 font-bold">₭</span>
           </div>
         </div>
       </section>
@@ -157,7 +161,7 @@ function PanelBody(props: Props) {
         <button
           onClick={onCash}
           disabled={disabled}
-          className="h-14 rounded-2xl bg-slate-900 text-white font-bold flex flex-col items-center justify-center gap-0.5 hover:bg-slate-800 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="h-16 rounded-2xl bg-white border border-slate-200 text-slate-900 font-bold flex flex-col items-center justify-center gap-0.5 hover:border-slate-400 hover:shadow-md active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <div className="flex items-center gap-1.5">
             <CreditCard size={16} strokeWidth={2.5} />
@@ -168,7 +172,7 @@ function PanelBody(props: Props) {
         <button
           onClick={onTransfer}
           disabled={disabled}
-          className="h-14 rounded-2xl bg-blue-600 text-white font-bold flex flex-col items-center justify-center gap-0.5 hover:bg-blue-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          className="h-16 rounded-2xl bg-indigo-600 text-white font-bold flex flex-col items-center justify-center gap-0.5 shadow-lg shadow-indigo-600/20 hover:bg-indigo-700 active:scale-[0.98] transition-all disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
         >
           <div className="flex items-center gap-1.5">
             <QrCode size={16} strokeWidth={2.5} />
@@ -199,7 +203,7 @@ export default function PayPanel(props: Props) {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex lg:flex-col w-[340px] shrink-0 border-l border-slate-200 bg-slate-50/40 overflow-y-auto">
+      <aside className="hidden lg:flex lg:flex-col w-[370px] shrink-0 border-l border-slate-200/80 bg-slate-50 overflow-y-auto">
         <PanelBody {...props} />
       </aside>
 

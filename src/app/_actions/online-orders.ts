@@ -1,11 +1,13 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensureOnlineOrdersTable } from "@/lib/tables";
 
 type Row = Record<string, unknown>;
 
 export async function getOnlineOrdersAction(status = "pending", query = ""): Promise<Row[]> {
+  await requireSession();
   await ensureOnlineOrdersTable();
   let sql = "SELECT order_no, status, customer_name, customer_phone, total, created_at FROM pos_online_orders WHERE 1=1";
   const params: unknown[] = [];
@@ -23,11 +25,13 @@ export async function getOnlineOrdersAction(status = "pending", query = ""): Pro
 }
 
 export async function getOnlineOrderAction(orderNo: string): Promise<Row | null> {
+  await requireSession();
   await ensureOnlineOrdersTable();
   return (await runQuery("SELECT * FROM pos_online_orders WHERE order_no = $1", [orderNo], "one")) as Row | null;
 }
 
 export async function updateOnlineOrderStatusAction(orderNo: string, statusRaw: string): Promise<Row> {
+  await requireSession();
   const status = (statusRaw || "").trim().toLowerCase();
   if (!["pending", "ready", "picked", "cancelled"].includes(status)) {
     throw new Error("Invalid status");

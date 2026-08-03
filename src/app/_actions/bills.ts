@@ -1,6 +1,7 @@
 "use server";
 
 import { pool, runQuery } from "@/lib/db";
+import { getSession, requireSession } from "@/lib/session";
 import { ensureChangeLogTable, ensureFxRateTable, ensureSavedBillsTable } from "@/lib/tables";
 import { notifyLineOnBill } from "@/lib/line";
 
@@ -17,6 +18,7 @@ function toDecimal(value: unknown, defaultVal = 0): number {
 }
 
 export async function getDocNoAction(): Promise<{ doc_no: string }> {
+  await requireSession();
   const now = new Date();
   const yy = String(now.getFullYear()).slice(2);
   const mm = String(now.getMonth() + 1).padStart(2, "0");
@@ -31,6 +33,7 @@ export async function getDocNoAction(): Promise<{ doc_no: string }> {
 }
 
 export async function searchBillsAction(docNoRaw: string): Promise<Row[]> {
+  await requireSession();
   const docNo = (docNoRaw || "").trim();
   if (!docNo) return [];
   return (await runQuery(
@@ -92,14 +95,21 @@ export async function getPosBillAction(docNo: string): Promise<(Row & { items: R
 
 export type SaveBillResult = { success: boolean; doc_no?: string; exchange_rate?: number; error?: string };
 
+/** Per-process guard so schema DDL runs once, not on every sale. */
+let billTablesEnsured = false;
+
 export async function saveBillAction(body: Record<string, unknown>): Promise<SaveBillResult> {
-  console.log("Received POS billing data:", body);
+  // Reachable from the customer shop (no session) and the POS (staff session).
+  const session = await getSession();
   const client = await pool.connect();
   try {
-    await client.query("ALTER TABLE cb_trans ADD COLUMN IF NOT EXISTS exchange_rate numeric");
-    await client.query(`CREATE TABLE IF NOT EXISTS pos_saved_bills (
-      id SERIAL PRIMARY KEY, payload JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW()
-    )`);
+    if (!billTablesEnsured) {
+      await client.query("ALTER TABLE cb_trans ADD COLUMN IF NOT EXISTS exchange_rate numeric");
+      await client.query(`CREATE TABLE IF NOT EXISTS pos_saved_bills (
+        id SERIAL PRIMARY KEY, payload JSONB NOT NULL, created_at TIMESTAMP DEFAULT NOW()
+      )`);
+      billTablesEnsured = true;
+    }
 
     await client.query("BEGIN");
     const now = new Date();
@@ -162,16 +172,24 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
     const changeAmount = toDecimal(body.change_amount);
     const bahtAmount = toDecimal(body.baht_amount);
     const bahtRate = toDecimal(body.baht_rate);
-    const sumPoint = toDecimal((body.point as number) || (body.earnedPoints as number));
+    // Points come from the client — enforce the earn rule (1 point / 50,000₭)
+    // server-side so a forged request can't mint arbitrary points.
+    const POINTS_RATE_LAK = 50000;
+    const maxEarnable = Math.floor((totalAmount2 || totalAmount || 0) / POINTS_RATE_LAK);
+    const rawPoint = toDecimal((body.point as number) || (body.earnedPoints as number));
+    const sumPoint = Math.max(0, Math.min(Math.floor(rawPoint), maxEarnable));
     const changeBaht = bahtRate > 0 ? changeAmount / bahtRate : 0;
+    // Attribute the document to the logged-in user when there is a session;
+    // the client-supplied value is only a fallback for the customer shop flow.
+    const creatorCode = session?.code || (body.user_login as string) || "";
 
     await client.query(
       `INSERT INTO ic_trans(doc_ref, trans_type, trans_flag, doc_date, doc_no, vat_type, cust_code, branch_code, currency_code, exchange_rate, total_value, total_amount, doc_time,
         doc_format_code, creator_code, total_value_2, total_amount_2, inquiry_type, sale_code, side_code, department_code, sum_point)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [docNo, 2, 44, docDate, docNo, 2, custCode, "01", "02", Number(exchangeRate || 1),
-        totalValue, totalAmount, docTime, "SPOS", body.user_login, totalAmount2, totalAmount2, 1,
-        saleCode, sideCode, departmentCode, toDecimal(body.earnedPoints)]
+        totalValue, totalAmount, docTime, "SPOS", creatorCode, totalAmount2, totalAmount2, 1,
+        saleCode, sideCode, departmentCode, sumPoint]
     );
 
     const totalForAllocation = safeSubtotal > 0 ? safeSubtotal : computedSubtotal;
@@ -196,6 +214,9 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
       const sumAmount2 = rawItem.sum_amount;
       const itemCode = rawItem.item_code || rawItem.id || rawItem.ic_code || rawItem.barcode || "";
       const averageCost = toDecimal(rawItem.average_cost || avgCostMap[itemCode as string] || 0);
+      // SML convention: sum_of_cost is the TOTAL line cost (unit avg cost x qty),
+      // matching what the ERP's cost recalculation writes back.
+      const lineCost = Math.round(averageCost * quantity * 100) / 100;
 
       await client.query(
         `INSERT INTO ic_trans_detail (
@@ -214,7 +235,7 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
           quantity, unitPrice,
           discAmt / Number(exchangeRate || 1),
           lineTotal, whCode, shelfCode, docTime, docDate, docTime,
-          averageCost, discAmt, discAmt2,
+          lineCost, discAmt, discAmt2,
           price2, sumAmount2,
           rawItem.item_main_code || rawItem.item_code || rawItem.id || "",
           rawItem.remark || "",
@@ -300,8 +321,9 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
     return { success: true, doc_no: docNo as string, exchange_rate: Number(exchangeRate || 1) };
   } catch (exc) {
     await client.query("ROLLBACK").catch(() => {});
+    // Log details server-side only — raw PG errors disclose schema to the client.
     console.error("Error saving POS bill:", exc);
-    return { success: false, error: String(exc) || "Unable to save bill" };
+    return { success: false, error: "Unable to save bill" };
   } finally {
     client.release();
   }

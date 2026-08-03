@@ -26,8 +26,8 @@ function RailButton({ action }: { action: LeftRailAction }) {
     <button
       onClick={onClick}
       title={hint || label}
-      className={`group relative w-10 h-10 rounded-lg flex items-center justify-center transition-colors ${
-        active ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+      className={`group relative w-11 h-11 rounded-xl flex items-center justify-center transition-all ${
+        active ? "bg-indigo-600 text-white shadow-lg shadow-indigo-600/20" : "text-slate-500 hover:bg-indigo-50 hover:text-indigo-700"
       }`}
     >
       <Icon size={16} strokeWidth={2} />
@@ -46,7 +46,7 @@ function RailButton({ action }: { action: LeftRailAction }) {
 export default function LeftRail({ actions, divider = [] }: Props) {
   const visible = actions.filter((a) => !a.hidden);
   return (
-    <aside className="hidden md:flex flex-col items-center gap-1 py-3 px-1.5 border-r border-slate-200 bg-white w-14 shrink-0">
+    <aside className="hidden md:flex flex-col items-center gap-1.5 py-4 px-2 border-r border-slate-200/80 bg-white w-16 shrink-0 z-20">
       {visible.map((action, idx) => (
         <div key={action.id} className="contents">
           <RailButton action={action} />

@@ -1,10 +1,17 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { getSession } from "@/lib/session";
 
 type Row = Record<string, unknown>;
 
 export async function searchCustomersAction(query = ""): Promise<Row[]> {
+  // Reachable from the customer-facing shop (no session). Without a session,
+  // require a specific query so the member list can't be enumerated wholesale.
+  const session = await getSession();
+  const q = (query || "").trim();
+  if (!session && q.length < 4) return [];
+
   let sql = `
     SELECT a.code, a.name_1, a.telephone, a.point_balance::int, b.discount_item
     FROM ar_customer a
@@ -12,7 +19,6 @@ export async function searchCustomersAction(query = ""): Promise<Row[]> {
     WHERE reg_group = 'member'
   `;
   const params: unknown[] = [];
-  const q = (query || "").trim();
   if (q) {
     const like = `%${q.toLowerCase()}%`;
     sql += ` AND (lower(a.name_1) LIKE $1 OR a.code LIKE $2 OR a.telephone LIKE $3)`;
@@ -23,6 +29,8 @@ export async function searchCustomersAction(query = ""): Promise<Row[]> {
 }
 
 export async function searchStaffAction(query = ""): Promise<Row[]> {
+  const session = await getSession();
+  if (!session) throw new Error("Unauthorized");
   let sql = "SELECT code, name_1 FROM erp_user WHERE side = '200'";
   const params: unknown[] = [];
   const q = (query || "").trim();

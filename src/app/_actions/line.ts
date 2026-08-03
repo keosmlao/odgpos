@@ -1,11 +1,13 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensureLineRecipientsTable } from "@/lib/tables";
 
 type Row = Record<string, unknown>;
 
 export async function getLineRecipientsAction(): Promise<Row[]> {
+  await requireSession();
   await ensureLineRecipientsTable();
   return (await runQuery(
     "SELECT id, name, line_user_id, recipient_type, staff_code, phone, active, notify_customer, created_at FROM pos_line_recipients ORDER BY created_at DESC"
@@ -13,7 +15,15 @@ export async function getLineRecipientsAction(): Promise<Row[]> {
 }
 
 export async function getStaffLineUsersAction(): Promise<Row[]> {
-  return (await runQuery("SELECT code, name_1, line_id FROM erp_user ORDER BY name_1")) as Row[];
+  await requireSession();
+  return (await runQuery(
+    `SELECT trim(employee_code) AS code,
+            COALESCE(NULLIF(trim(fullname_lo), ''), NULLIF(trim(nickname), ''), NULLIF(trim(fullname_en), ''), trim(employee_code)) AS name_1,
+            NULLIF(trim(line_id), '') AS line_id
+       FROM odg_employee
+      WHERE COALESCE(employment_status, 'ACTIVE') = 'ACTIVE'
+      ORDER BY name_1`
+  )) as Row[];
 }
 
 function readPayload(data: Row) {
@@ -32,6 +42,7 @@ function readPayload(data: Row) {
 }
 
 export async function createLineRecipientAction(data: Row): Promise<Row> {
+  await requireSession();
   await ensureLineRecipientsTable();
   const p = readPayload(data);
   return (await runQuery(
@@ -44,6 +55,7 @@ export async function createLineRecipientAction(data: Row): Promise<Row> {
 }
 
 export async function updateLineRecipientAction(id: number | string, data: Row): Promise<Row> {
+  await requireSession();
   await ensureLineRecipientsTable();
   const p = readPayload(data);
   const row = (await runQuery(
@@ -59,6 +71,7 @@ export async function updateLineRecipientAction(id: number | string, data: Row):
 }
 
 export async function deleteLineRecipientAction(id: number | string): Promise<{ success: true; id: unknown }> {
+  await requireSession();
   await ensureLineRecipientsTable();
   const row = (await runQuery(
     "DELETE FROM pos_line_recipients WHERE id = $1 RETURNING id",

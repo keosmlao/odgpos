@@ -2,6 +2,7 @@
 
 import { runQuery } from "@/lib/db";
 import { ensureDailyClosureTable } from "@/lib/tables";
+import { requireSession } from "@/lib/session";
 
 type Row = Record<string, unknown>;
 
@@ -19,21 +20,32 @@ async function queryTodayUnsent(): Promise<{ summary: DailySummary; bills: Row[]
   let notInClause = "";
   const params: unknown[] = [];
   if (sentDocNos.length) {
-    notInClause = `AND doc_no NOT IN (${sentDocNos.map((_, i) => `$${i + 1}`).join(",")})`;
+    notInClause = `AND t.doc_no NOT IN (${sentDocNos.map((_, i) => `$${i + 1}`).join(",")})`;
     params.push(...sentDocNos);
   }
+  // ic_trans has no payment_type column — derive it from cb_trans (transfer bills have tranfer_amount > 0).
+  const paymentJoin = `LEFT JOIN (
+      SELECT doc_no, MAX(COALESCE(tranfer_amount, 0)) AS transfer_amt
+        FROM cb_trans
+       WHERE trans_flag = 44 AND doc_format_code = 'SPOS'
+       GROUP BY doc_no
+    ) cb ON cb.doc_no = t.doc_no`;
+  const paymentTypeSql = `CASE WHEN cb.transfer_amt > 0 THEN 'transfer' WHEN cb.doc_no IS NOT NULL THEN 'cash' END`;
   const summaryRows = (await runQuery(
-    `SELECT COALESCE(SUM(total_amount_2), 0) AS total_all,
-        COALESCE(SUM(CASE WHEN payment_type = 'cash' THEN total_amount_2 ELSE 0 END), 0) AS total_cash,
-        COALESCE(SUM(CASE WHEN payment_type = 'transfer' THEN total_amount_2 ELSE 0 END), 0) AS total_transfer,
+    `SELECT COALESCE(SUM(t.total_amount_2), 0) AS total_all,
+        COALESCE(SUM(CASE WHEN ${paymentTypeSql} = 'cash' THEN t.total_amount_2 ELSE 0 END), 0) AS total_cash,
+        COALESCE(SUM(CASE WHEN ${paymentTypeSql} = 'transfer' THEN t.total_amount_2 ELSE 0 END), 0) AS total_transfer,
         COUNT(*) AS count_bills
-       FROM ic_trans WHERE doc_format_code = 'SPOS' AND doc_date = CURRENT_DATE ${notInClause}`,
+       FROM ic_trans t ${paymentJoin}
+      WHERE t.doc_format_code = 'SPOS' AND t.doc_date = CURRENT_DATE ${notInClause}`,
     params
   )) as DailySummary[];
   const bills = (await runQuery(
-    `SELECT doc_no AS order_id, doc_date, creator_code AS staff, total_amount_2 AS total, payment_type
-       FROM ic_trans WHERE doc_format_code = 'SPOS' AND doc_date = CURRENT_DATE ${notInClause}
-      ORDER BY doc_no DESC LIMIT 200`,
+    `SELECT t.doc_no AS order_id, t.doc_date, t.creator_code AS staff, t.total_amount_2 AS total,
+            ${paymentTypeSql} AS payment_type
+       FROM ic_trans t ${paymentJoin}
+      WHERE t.doc_format_code = 'SPOS' AND t.doc_date = CURRENT_DATE ${notInClause}
+      ORDER BY t.doc_no DESC LIMIT 200`,
     params
   )) as Row[];
   const summary = summaryRows?.[0] ?? { total_all: 0, total_cash: 0, total_transfer: 0, count_bills: 0 };
@@ -41,10 +53,45 @@ async function queryTodayUnsent(): Promise<{ summary: DailySummary; bills: Row[]
 }
 
 export async function getDailySummaryAction(): Promise<{ summary: DailySummary; bills: Row[] }> {
+  await requireSession();
   return queryTodayUnsent();
 }
 
+export type DailyClosureEntry = {
+  id: number;
+  created_at: string;
+  staff: string;
+  recipient: string;
+  total_all: number;
+  count_bills: number;
+};
+
+export async function listDailyClosuresAction(limit = 30): Promise<DailyClosureEntry[]> {
+  await requireSession();
+  await ensureDailyClosureTable();
+  const rows = (await runQuery(
+    `SELECT id, created_at,
+            COALESCE(payload->>'staff', payload->>'staffCode', '') AS staff,
+            COALESCE(payload->>'recipient', '') AS recipient,
+            COALESCE((payload->'summary'->>'total_all')::numeric, 0) AS total_all,
+            COALESCE((payload->'summary'->>'count_bills')::numeric, jsonb_array_length(COALESCE(payload->'bills', '[]'::jsonb)), 0) AS count_bills
+       FROM pos_daily_closure
+      ORDER BY created_at DESC
+      LIMIT $1`,
+    [Math.min(Math.max(Number(limit) || 30, 1), 200)]
+  )) as Row[];
+  return (rows || []).map((r) => ({
+    id: Number(r.id),
+    created_at: r.created_at instanceof Date ? r.created_at.toISOString() : String(r.created_at || ""),
+    staff: String(r.staff || ""),
+    recipient: String(r.recipient || ""),
+    total_all: Number(r.total_all) || 0,
+    count_bills: Number(r.count_bills) || 0,
+  }));
+}
+
 export async function submitDailySummaryAction(payload: Row): Promise<{ success: true; id: unknown; created_at: unknown }> {
+  await requireSession();
   await ensureDailyClosureTable();
   const cleanPayload = {
     summary: payload.summary || {},
@@ -72,6 +119,7 @@ function convertDecimals(obj: unknown): unknown {
 }
 
 export async function commitDailySummaryAction(data: Row): Promise<Row> {
+  await requireSession();
   const { summary, bills } = await queryTodayUnsent();
   const payload = {
     summary: convertDecimals(summary),

@@ -1,6 +1,7 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensureMinimumStockTable, ensureLineRecipientsTable } from "@/lib/tables";
 import { sendLineMessage } from "@/lib/line";
 import { formatQty } from "@/lib/utils";
@@ -11,6 +12,7 @@ export async function listMinimumStockAction(
   query = "",
   options: { lowOnly?: boolean; includeInactive?: boolean; wh_code?: string; location_code?: string } = {}
 ): Promise<Row[]> {
+  await requireSession();
   await ensureMinimumStockTable();
   const params: unknown[] = [];
   const whereClauses: string[] = [];
@@ -45,6 +47,7 @@ export async function listMinimumStockAction(
 }
 
 export async function upsertMinimumStockAction(payload: Row): Promise<Row> {
+  await requireSession();
   await ensureMinimumStockTable();
   const icCode = String(payload.ic_code || "").trim();
   if (!icCode) throw new Error("ic_code is required");
@@ -67,6 +70,7 @@ export async function upsertMinimumStockAction(payload: Row): Promise<Row> {
 }
 
 export async function deleteMinimumStockAction(id: number | string): Promise<{ success: true; id: unknown; ic_code: unknown }> {
+  await requireSession();
   await ensureMinimumStockTable();
   const row = (await runQuery(
     "DELETE FROM pos_minimum_stock WHERE id = $1 RETURNING id, ic_code",
@@ -78,6 +82,7 @@ export async function deleteMinimumStockAction(id: number | string): Promise<{ s
 }
 
 export async function notifyMinimumStockAction(payload: Row): Promise<{ success: true; items: number; sent: number }> {
+  await requireSession();
   await ensureMinimumStockTable();
   await ensureLineRecipientsTable();
   const whCode = String(payload.wh_code || "").trim();

@@ -1,6 +1,7 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { requireSession } from "@/lib/session";
 import { ensureShopOrdersTable } from "@/lib/tables";
 
 type Row = Record<string, unknown>;
@@ -62,21 +63,41 @@ export async function createShopOrderAction(payload: Row): Promise<{ order_no: s
   const customerCode = (customer.code as string) || (payload.customer_code as string);
   const customerName = (customer.name as string) || (payload.customer_name as string);
   const customerPhone = (customer.phone as string) || (payload.customer_phone as string);
-  const discountPercent = Number(payload.discount_percent || 0);
+  const discountPercent = Math.min(Math.max(Number(payload.discount_percent || 0), 0), 100);
+
+  // Prices are validated server-side against the price master — the client is
+  // unauthenticated (customer shop), so its prices cannot be trusted.
+  const codes = (items as ShopOrderItem[])
+    .map((i) => String(i.id || i.item_code || i.ic_code || "").trim())
+    .filter(Boolean);
+  const priceRows = codes.length
+    ? ((await runQuery(
+        `SELECT DISTINCT ON (ic_code) ic_code, sale_price1
+           FROM ic_inventory_price
+          WHERE currency_code = '02' AND from_qty = 1 AND ic_code = ANY($1)
+          ORDER BY ic_code,
+            (CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)) DESC,
+            from_date DESC, roworder DESC`,
+        [codes]
+      )) as { ic_code: string; sale_price1: unknown }[])
+    : [];
+  const priceMap: Record<string, number> = {};
+  for (const p of priceRows) priceMap[String(p.ic_code).trim()] = Number(p.sale_price1) || 0;
 
   let subtotal = 0;
   const cleanItems: Row[] = [];
   for (const itemRaw of items as ShopOrderItem[]) {
-    const price = Number(itemRaw.price || 0);
+    const code = String(itemRaw.id || itemRaw.item_code || itemRaw.ic_code || "").trim();
+    const serverPrice = priceMap[code] || 0;
+    const price = serverPrice > 0 ? serverPrice : Number(itemRaw.price || 0);
     const qty = Number(itemRaw.quantity || 0);
     if (qty <= 0) continue;
     subtotal += price * qty;
     cleanItems.push({
-      id: itemRaw.id || itemRaw.item_code || itemRaw.ic_code,
+      id: code,
       name: itemRaw.name || itemRaw.ic_name,
       unit: itemRaw.unit || itemRaw.unit_code,
-      price, unit_cost: Number(itemRaw.unit_cost || 0),
-      average_cost: Number(itemRaw.average_cost || 0),
+      price,
       quantity: qty, price_from_qty: itemRaw.price_from_qty,
     });
   }
@@ -96,6 +117,7 @@ export async function createShopOrderAction(payload: Row): Promise<{ order_no: s
 }
 
 export async function updateShopOrderStatusAction(orderNo: string, statusRaw: string): Promise<Row> {
+  await requireSession();
   const status = (statusRaw || "").trim().toLowerCase();
   if (!["pending", "ready", "picked", "cancelled"].includes(status)) {
     throw new Error("Invalid status");

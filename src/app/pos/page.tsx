@@ -71,9 +71,9 @@ const ORDER_COUNTER_PREFIX = 'pos_order_counter_';
 const HELD_BILLS_KEY = 'pos_held_bills';
 const SALES_STORAGE_KEY = 'pos_selected_sales';
 const DEFAULT_MEMBER = {
-  id: '00000000',
-  code: '00000000',
-  name: 'General Customer',
+  id: '01-2125',
+  code: '01-2125',
+  name: 'ລູກຄ້າໜ້າຮ້ານ(ຂົວຫຼວງ)',
   phone: '',
   points: 0,
   discount: 0,
@@ -1050,10 +1050,17 @@ const Cart = ({ items: cartItems = [], onUpdateQty, onSetQty, onRemoveItem, hasM
   }, [cartItems]);
 
   return (
-    <div className="flex w-full flex-col h-full min-h-0 bg-white">
+    <div className="flex w-full flex-col h-full min-h-0 bg-white rounded-3xl border border-slate-200/80 shadow-[0_12px_40px_rgba(15,23,42,0.06)] overflow-hidden">
       {/* Sticky barcode/search header */}
       {onBarcodeSubmit ? (
-        <div className="shrink-0 border-b border-slate-200 px-4 py-2.5 bg-white">
+        <div className="shrink-0 border-b border-slate-100 px-4 sm:px-5 py-4 bg-white">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-indigo-600">Current order</p>
+              <h1 className="text-[18px] font-black text-slate-900">ລາຍການສິນຄ້າ</h1>
+            </div>
+            <div className="rounded-full bg-slate-100 px-3 py-1.5 text-[11px] font-bold text-slate-600">{cartItems.length} ລາຍການ</div>
+          </div>
           <form onSubmit={handleBarcodeSubmit} className="relative group">
             <ScanLine
               className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors pointer-events-none"
@@ -1064,10 +1071,10 @@ const Cart = ({ items: cartItems = [], onUpdateQty, onSetQty, onRemoveItem, hasM
               value={barcode}
               onChange={(e) => setBarcode(e.target.value)}
               placeholder="ສະແກນບາໂຄດ ຫຼື ພິມລະຫັດ…"
-              className="w-full h-10 pl-9 pr-16 rounded-lg bg-slate-50 border border-slate-200 focus:bg-white focus:border-slate-900 focus:ring-2 focus:ring-slate-900/10 outline-none transition-all text-[13px] font-medium placeholder:text-slate-400"
+              className="w-full h-12 pl-10 pr-20 rounded-2xl bg-slate-50 border border-slate-200 focus:bg-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/10 outline-none transition-all text-[14px] font-semibold placeholder:text-slate-400"
               autoFocus
             />
-            <kbd className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-bold text-slate-400 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5 pointer-events-none">Enter</kbd>
+            <kbd className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-mono font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg px-2 py-1 pointer-events-none">Enter</kbd>
           </form>
         </div>
       ) : null}
@@ -1086,12 +1093,13 @@ const Cart = ({ items: cartItems = [], onUpdateQty, onSetQty, onRemoveItem, hasM
       {/* Items list */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {cartIsEmpty ? (
-          <div className="h-full flex flex-col items-center justify-center text-center py-12 px-4">
-            <div className="w-14 h-14 rounded-2xl bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-300 mb-3">
-              <ShoppingBag size={24} strokeWidth={1.5} />
+          <div className="h-full flex flex-col items-center justify-center text-center py-12 px-4 bg-[radial-gradient(circle_at_center,rgba(99,102,241,0.06),transparent_32%)]">
+            <div className="w-20 h-20 rounded-3xl bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-500 mb-5 shadow-sm">
+              <ShoppingBag size={32} strokeWidth={1.7} />
             </div>
-            <p className="text-[14px] font-bold text-slate-700">ກະຕ່າສິນຄ້າຫວ່າງ</p>
-            <p className="text-[12px] text-slate-400 mt-1">ສະແກນບາໂຄດ ຫຼື ກົດ <span className="font-mono font-bold text-slate-500">ຄົ້ນຫາ</span> ເພື່ອເລີ່ມ</p>
+            <p className="text-[17px] font-black text-slate-800">ພ້ອມເລີ່ມການຂາຍ</p>
+            <p className="text-[13px] text-slate-400 mt-1.5 max-w-xs">ສະແກນບາໂຄດ ຫຼື ເລືອກຄົ້ນຫາສິນຄ້າຈາກແຖບດ້ານຊ້າຍ</p>
+            <div className="mt-5 flex items-center gap-2 rounded-xl bg-white border border-slate-200 px-3 py-2 text-[11px] font-semibold text-slate-500 shadow-sm"><ScanLine size={14} className="text-indigo-500" /> ຮອງຮັບ Barcode scanner</div>
           </div>
         ) : (
           <div>
@@ -2439,7 +2447,7 @@ export default function POS() {
   }, [items, salesCode]);
 
   return (
-    <div className="h-screen flex flex-col bg-slate-50 text-slate-900">
+    <div className="h-screen flex flex-col bg-[#f5f7fb] text-slate-900">
       <TopBar
         cashierName={cashierName}
         cashierCode={cashierCode}
@@ -2464,7 +2472,7 @@ export default function POS() {
           ] as LeftRailAction[]}
         />
 
-        <main className="flex-1 flex flex-col min-w-0 bg-white">
+        <main className="flex-1 flex flex-col min-w-0 bg-[#f8fafc] p-3 sm:p-4">
           <Cart
             items={lineItems}
             onUpdateQty={updateQty}
