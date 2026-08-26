@@ -202,6 +202,9 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
       for (const r of avgRes.rows) avgCostMap[r.code] = r.average_cost;
     }
 
+    // Aggregated per item so a bill listing the same code twice deducts once.
+    const soldQtyByItem = new Map<string, number>();
+
     for (const rawItem of itemsList) {
       const unitPrice = toDecimal(rawItem.unitPrice || rawItem.price) * Number(exchangeRate);
       const quantity = toDecimal(rawItem.quantity || rawItem.qty || 1);
@@ -217,6 +220,7 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
       // SML convention: sum_of_cost is the TOTAL line cost (unit avg cost x qty),
       // matching what the ERP's cost recalculation writes back.
       const lineCost = Math.round(averageCost * quantity * 100) / 100;
+      if (itemCode) soldQtyByItem.set(String(itemCode), (soldQtyByItem.get(String(itemCode)) ?? 0) + quantity);
 
       await client.query(
         `INSERT INTO ic_trans_detail (
@@ -242,6 +246,19 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
           body.orderId || docNo,
           lineTotal, lineTotal,
         ]
+      );
+    }
+
+    // ic_inventory.balance_qty is the ERP's denormalised on-hand figure. No trigger
+    // maintains it, so the sale has to deduct it here; the movement rows in
+    // ic_trans_detail (calc_flag -1) already cover the computed stock balance.
+    // Non-stock items (item_type 3/5) are skipped, matching the SML balance function.
+    if (soldQtyByItem.size) {
+      await client.query(
+        `UPDATE ic_inventory SET balance_qty = COALESCE(balance_qty, 0) - v.qty
+           FROM unnest($1::text[], $2::numeric[]) AS v(code, qty)
+          WHERE ic_inventory.code = v.code AND COALESCE(ic_inventory.item_type, 0) NOT IN (3, 5)`,
+        [[...soldQtyByItem.keys()], [...soldQtyByItem.values()]]
       );
     }
 
