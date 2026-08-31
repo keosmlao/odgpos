@@ -17,6 +17,35 @@ export async function getFxRatesAction(limit = 10): Promise<Row[]> {
   )) as Row[];
 }
 
+export type ErpCurrency = { code: string; name: string; kipPerUnit: number };
+
+/**
+ * The currencies the till can take, priced in kip. erp_currency quotes every
+ * currency against baht, the base, so a kip price is that quote divided by the
+ * kip one: 33 baht to the dollar over 0.0014598 baht to the kip is 22,606 kip
+ * to the dollar. Kip itself is left out — it is what the drawer counts in.
+ */
+export async function getErpCurrenciesAction(): Promise<ErpCurrency[]> {
+  await requireSession();
+  const rows = (await runQuery(
+    "SELECT code, name_1, exchange_rate_present FROM erp_currency ORDER BY code"
+  )) as { code?: unknown; name_1?: unknown; exchange_rate_present?: unknown }[];
+  const bahtPerKip = Number(
+    rows.find((r) => String(r.code ?? "").trim() === "02")?.exchange_rate_present
+  );
+  if (!isFinite(bahtPerKip) || bahtPerKip <= 0) return [];
+  return rows
+    .map((r) => {
+      const bahtPerUnit = Number(r.exchange_rate_present);
+      return {
+        code: String(r.code ?? "").trim(),
+        name: String(r.name_1 ?? "").trim(),
+        kipPerUnit: isFinite(bahtPerUnit) && bahtPerUnit > 0 ? Math.round(bahtPerUnit / bahtPerKip) : 0,
+      };
+    })
+    .filter((c) => c.code && c.code !== "02" && c.kipPerUnit > 0);
+}
+
 /**
  * Kip per baht, as the ERP itself values them. erp_currency holds the rate the
  * other way round — baht per kip, on the kip row ('02'), baht being the base

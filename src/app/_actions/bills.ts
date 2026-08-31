@@ -9,6 +9,11 @@ import { notifyLineOnBill } from "@/lib/line";
 
 type Row = Record<string, unknown>;
 
+/** ERP currency codes: baht is the base every document converts to, kip is what
+ *  the drawer counts and gives change in. */
+const BASE_CURRENCY = "01";
+const KIP_CURRENCY = "02";
+
 function toDecimal(value: unknown, defaultVal = 0): number {
   if (value == null) return defaultVal;
   if (typeof value === "string") {
@@ -438,33 +443,75 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
         [2, 44, docDate, docNo, "1010201", "1010201", "BCEL01", totalAmount2, docDate, 1, "02", Number(exchangeRate || 1), totalAmount]
       );
     } else {
-      // Cash, in kip or baht or both. The ERP's own documents fill this in one
-      // way (checked against 21k of its cash tenders): cash_amount is what came
-      // in as baht, the base currency, and needs no line of its own;
-      // total_other_currency is the baht value of what came in as another
-      // currency, and gets one doc_type 19 line per currency — trans_number is
-      // that currency's code, amount is in that currency, exchange_rate is its
-      // rate to baht. Totals here are baht, so what the customer settled in
-      // baht is capped at the bill and the rest is the kip half.
-      const bahtPaid = Math.min(Math.max(bahtAmount, 0), totalAmount);
-      const kipPaidInBaht = Math.max(totalAmount - bahtPaid, 0);
+      // Cash, in any mix of the currencies the ERP knows. Its own documents
+      // fill this in one way (checked against 21k of its cash tenders):
+      // cash_amount is what came in as baht, the base currency, and needs no
+      // line of its own; total_other_currency is the baht value of everything
+      // taken in another currency, and each of those currencies gets a
+      // doc_type 19 line — trans_number its code, amount in that currency,
+      // exchange_rate its rate to baht.
       const rate = Number(exchangeRate || 1);
-      const kipTotal = totalAmount2 || (rate ? totalAmount / rate : 0);
-      const kipPaid = Math.max(Math.round(kipTotal - (rate ? bahtPaid / rate : 0)), 0);
+      // What the customer handed over, per currency. The till sends this list;
+      // a baht-only request (and the shop, which sends neither) still works.
+      const rawTenders = Array.isArray(body.tenders)
+        ? (body.tenders as Record<string, unknown>[])
+        : bahtAmount > 0
+          ? [{ currency_code: BASE_CURRENCY, amount: bahtAmount }]
+          : [];
+      const tenderCodes = [...new Set(
+        rawTenders
+          .map((t) => String(t.currency_code || t.code || "").trim())
+          .filter((code) => code && code !== KIP_CURRENCY)
+      )];
+      // Rates come from erp_currency, never from the request: the books convert
+      // at the ERP's rate whatever the counter bought the notes at.
+      const tenderRates = await loadCurrencyRates(client, tenderCodes);
+
+      // Each foreign tender settles as much of the bill as it is worth, capped
+      // so the tenders never add up past the total; kip is last because it is
+      // the currency the change is given in, and takes whatever is left.
+      const appliedByCurrency = new Map<string, number>();
+      let unsettled = totalAmount;
+      for (const tender of rawTenders) {
+        const code = String(tender.currency_code || tender.code || "").trim();
+        const bahtPerUnit = tenderRates.get(code);
+        if (!code || code === KIP_CURRENCY || !bahtPerUnit) continue;
+        const applied = Math.min(Math.max(toDecimal(tender.amount), 0) * bahtPerUnit, unsettled);
+        if (applied <= 0) continue;
+        appliedByCurrency.set(code, (appliedByCurrency.get(code) ?? 0) + applied);
+        unsettled -= applied;
+      }
+      const kipPaidInBaht = Math.max(unsettled, 0);
+      if (kipPaidInBaht > 0) appliedByCurrency.set(KIP_CURRENCY, kipPaidInBaht);
+
+      const bahtPaid = appliedByCurrency.get(BASE_CURRENCY) ?? 0;
+      const otherCurrencyPaid = [...appliedByCurrency.entries()]
+        .filter(([code]) => code !== BASE_CURRENCY)
+        .reduce((sum, [, value]) => sum + value, 0);
 
       await client.query(
         `INSERT INTO cb_trans(trans_type, trans_flag, doc_date, doc_no, doc_ref, total_amount, total_net_amount,
           cash_amount, total_other_currency, total_amount_pay, ap_ar_code, pay_type, doc_format_code, exchange_rate)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
         [2, 44, docDate, docNo, (body.route_id as string) || (body.doc_ref as string) || "",
-          totalAmount, totalAmount, bahtPaid, kipPaidInBaht, totalAmount, custCode, 1, "SPOS", rate]
+          totalAmount, totalAmount, bahtPaid, otherCurrencyPaid, totalAmount, custCode, 1, "SPOS", rate]
       );
-      if (kipPaid > 0) {
+
+      // One line per currency that is not the base one. Kip keeps the whole-kip
+      // rounding the till and the customer see.
+      for (const [code, appliedInBaht] of appliedByCurrency) {
+        if (code === BASE_CURRENCY) continue;
+        const bahtPerUnit = code === KIP_CURRENCY ? rate : tenderRates.get(code) ?? 0;
+        if (!bahtPerUnit) continue;
+        const amount = code === KIP_CURRENCY
+          ? Math.round(appliedInBaht / bahtPerUnit)
+          : Math.round((appliedInBaht / bahtPerUnit) * 100) / 100;
+        if (amount <= 0) continue;
         await client.query(
           `INSERT INTO cb_trans_detail(trans_type, trans_flag, doc_date, doc_no, trans_number, bank_code, bank_branch,
             amount, chq_due_date, doc_type, currency_code, exchange_rate, sum_amount_2)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [2, 44, docDate, docNo, "02", "", "", kipPaid, docDate, 19, "02", rate, kipPaidInBaht]
+          [2, 44, docDate, docNo, code, "", "", amount, docDate, 19, code, bahtPerUnit, appliedInBaht]
         );
       }
     }
@@ -523,6 +570,21 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
   } finally {
     client.release();
   }
+}
+
+/** Baht value of one unit of each currency, straight from the ERP's own table. */
+async function loadCurrencyRates(client: PoolClient, codes: string[]): Promise<Map<string, number>> {
+  const rates = new Map<string, number>();
+  if (!codes.length) return rates;
+  const res = await client.query(
+    "SELECT code, exchange_rate_present FROM erp_currency WHERE btrim(code) = ANY($1)",
+    [codes]
+  );
+  for (const row of res.rows) {
+    const rate = toDecimal(row.exchange_rate_present);
+    if (rate > 0) rates.set(String(row.code).trim(), rate);
+  }
+  return rates;
 }
 
 export type CancelBillResult = { success: boolean; error?: string };

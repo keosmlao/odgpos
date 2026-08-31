@@ -30,7 +30,7 @@ import {
   updateShopOrderStatusAction,
 } from '@/app/_actions/shop-orders';
 import { listProductImagesAction } from '@/app/_actions/product-images';
-import { getErpThbRateAction } from '@/app/_actions/fx';
+import { getErpCurrenciesAction, getErpThbRateAction } from '@/app/_actions/fx';
 import {
   getDailySummaryAction,
   commitDailySummaryAction,
@@ -158,6 +158,9 @@ const normalizeApiProduct = (raw) => {
     gift_qty: resolved?.gift_qty,
   };
 };
+
+const BAHT_CURRENCY_CODE = '01';
+const CURRENCY_SYMBOLS = { '01': '฿', '03': '$', '04': '¥' };
 
 const SALES_REQUIRED_MSG = 'ກະລຸນາເລືອກພະນັກງານຂາຍກ່ອນ';
 
@@ -1214,11 +1217,14 @@ const PaymentSummaryRow = ({ label, value, highlight = false }) => (
   </div>
 );
 
-const PaymentPanel = ({ isOpen, onClose, total: pmTotal, orderId: pmOrderId, onConfirm, onPaymentSuccess: pmOnPaymentSuccess, onAmountChange, onForeignAmountChange, receivedAmount: pmReceived = '', paymentType: pmPaymentType = 'cash', onPaymentTypeChange, isPaying: pmIsPaying = false }) => {
+const PaymentPanel = ({ isOpen, onClose, total: pmTotal, orderId: pmOrderId, onConfirm, onPaymentSuccess: pmOnPaymentSuccess, onAmountChange, onForeignAmountChange, receivedAmount: pmReceived = '', paymentType: pmPaymentType = 'cash', onPaymentTypeChange, isPaying: pmIsPaying = false, currencies = [] }) => {
   const [activeTab, setActiveTab] = useState(pmPaymentType === 'transfer' ? 'qr' : 'cash');
   const [kipAmount, setKipAmount] = useState('');
-  const [pmThbAmount, setPmThbAmount] = useState('');
   const [showRates, setShowRates] = useState(false);
+  // One entry per currency the ERP knows, keyed by its code; rates come from
+  // the ERP and the cashier can still correct one for the day.
+  const [foreignAmounts, setForeignAmounts] = useState({});
+  const [foreignRates, setForeignRates] = useState({});
   const [rates, setRates] = useState(() => { try { const stored = JSON.parse(localStorage.getItem('pos_fx_rates') || 'null'); if (stored && typeof stored === 'object') { return { thb: Number(stored.thb) || 520 }; } } catch {} return { thb: 520 }; });
 
   useEffect(() => {
@@ -1226,20 +1232,42 @@ const PaymentPanel = ({ isOpen, onClose, total: pmTotal, orderId: pmOrderId, onC
       if (onAmountChange) onAmountChange('');
       setActiveTab(pmPaymentType === 'transfer' ? 'qr' : 'cash');
       setKipAmount(pmReceived ? String(pmReceived) : '');
-      setPmThbAmount('');
+      setForeignAmounts({});
+      setForeignRates({});
       setShowRates(false);
       try { const stored = JSON.parse(localStorage.getItem('pos_fx_rates') || 'null'); if (stored && typeof stored === 'object') { setRates((prev) => ({ ...prev, thb: Number(stored.thb) || prev.thb })); } } catch {}
     }
   }, [isOpen, onAmountChange, pmPaymentType]);
 
+
   const numericKip = Number(kipAmount) || 0;
-  const numericThb = Number(pmThbAmount) || 0;
-  const totalReceivedKip = numericKip + (numericThb * (Number(rates.thb) || 0));
+  // The ERP's rate unless the cashier has typed over it for the day; baht keeps
+  // its own state because the top bar edits that one too.
+  const rateFor = (code) => {
+    if (code === BAHT_CURRENCY_CODE) return Number(rates.thb) || 0;
+    const typed = Number(foreignRates[code]) || 0;
+    return typed > 0 ? typed : Number(currencies.find((c) => c.code === code)?.kipPerUnit) || 0;
+  };
+  const tenders = currencies
+    .map((c) => ({ currency_code: c.code, amount: Number(foreignAmounts[c.code]) || 0, kipRate: rateFor(c.code) }))
+    .filter((t) => t.amount > 0 && t.kipRate > 0);
+  const foreignInKip = tenders.reduce((sum, t) => sum + t.amount * t.kipRate, 0);
+  const totalReceivedKip = numericKip + foreignInKip;
+  const numericThb = Number(foreignAmounts[BAHT_CURRENCY_CODE]) || 0;
   const pmChange = Math.max(0, totalReceivedKip - pmTotal);
   const canConfirm = totalReceivedKip >= pmTotal;
+  const tendersKey = JSON.stringify(tenders);
 
   useEffect(() => { if (onAmountChange) { onAmountChange(totalReceivedKip ? String(Math.round(totalReceivedKip)) : ''); } }, [totalReceivedKip, onAmountChange]);
-  useEffect(() => { if (onForeignAmountChange) { onForeignAmountChange({ thbAmount: numericThb, thbRate: Number(rates.thb) || 0, totalReceivedKip }); } }, [numericThb, rates.thb, totalReceivedKip, onForeignAmountChange]);
+  useEffect(() => {
+    if (!onForeignAmountChange) return;
+    onForeignAmountChange({
+      thbAmount: numericThb,
+      thbRate: Number(rates.thb) || 0,
+      totalReceivedKip,
+      tenders: JSON.parse(tendersKey).map(({ currency_code, amount }) => ({ currency_code, amount })),
+    });
+  }, [numericThb, rates.thb, totalReceivedKip, tendersKey, onForeignAmountChange]);
   useEffect(() => { localStorage.setItem('pos_fx_rates', JSON.stringify(rates)); }, [rates]);
 
   const handleConfirm = () => { if (pmIsPaying) return; onConfirm(); };
@@ -1328,16 +1356,29 @@ const PaymentPanel = ({ isOpen, onClose, total: pmTotal, orderId: pmOrderId, onC
                       <span>{showRates ? 'ເຊື່ອງ' : 'ແກ້ເລດ'}</span>
                     </button>
                   </div>
-                  <CurrencyInput value={pmThbAmount} onChange={setPmThbAmount} currency="THB" symbol="฿" size="normal" />
-                  {showRates ? (
-                    <RateInput
-                      label="THB→LAK"
-                      value={rates.thb}
-                      onChange={(val) => setRates(prev => ({ ...prev, thb: val }))}
-                      symbol="฿"
-                    />
-                  ) : null}
-                  {numericThb > 0 ? (
+                  {currencies.map((c) => (
+                    <div key={c.code} className="space-y-1.5">
+                      <CurrencyInput
+                        value={foreignAmounts[c.code] || ''}
+                        onChange={(val) => setForeignAmounts((prev) => ({ ...prev, [c.code]: val }))}
+                        currency={c.name || c.code}
+                        symbol={CURRENCY_SYMBOLS[c.code] || ''}
+                        size="normal"
+                      />
+                      {showRates ? (
+                        <RateInput
+                          label={`${c.name || c.code}→LAK`}
+                          value={rateFor(c.code)}
+                          onChange={(val) => {
+                            if (c.code === BAHT_CURRENCY_CODE) setRates((prev) => ({ ...prev, thb: val }));
+                            setForeignRates((prev) => ({ ...prev, [c.code]: val }));
+                          }}
+                          symbol={CURRENCY_SYMBOLS[c.code] || ''}
+                        />
+                      ) : null}
+                    </div>
+                  ))}
+                  {foreignInKip > 0 ? (
                     <div className="pt-1 flex justify-between items-baseline text-[12px]">
                       <span className="text-slate-500">ລວມເປັນກີບ</span>
                       <span className="font-bold tabular-nums text-slate-900">{formatPrice(totalReceivedKip)} ₭</span>
@@ -1433,6 +1474,8 @@ export default function POS() {
   const [receivedAmount, setReceivedAmount] = useState('');
   const [bahtAmount, setBahtAmount] = useState(0);
   const [bahtRate, setBahtRate] = useState(0);
+  const [cashTenders, setCashTenders] = useState([]);
+  const [erpCurrencies, setErpCurrencies] = useState([]);
   const [thbRateInput, setThbRateInput] = useState(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('pos_fx_rates') || 'null');
@@ -1507,6 +1550,15 @@ export default function POS() {
     const numericRate = Number(String(thbRateInput).replace(/[^0-9]/g, '')) || 0;
     localStorage.setItem('pos_fx_rates', JSON.stringify({ thb: numericRate }));
   }, [thbRateInput]);
+
+  // The currencies the counter may take, priced in kip by the ERP itself.
+  useEffect(() => {
+    let cancelled = false;
+    getErpCurrenciesAction()
+      .then((list) => { if (!cancelled && Array.isArray(list)) setErpCurrencies(list); })
+      .catch(() => { /* the panel falls back to its last known rates */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Take the baht rate from the ERP on every load, so the till buys baht at the
   // rate the books convert at. A cashier can still type over it for the day.
@@ -2182,6 +2234,7 @@ export default function POS() {
         change_amount: changeDue,
         baht_amount: bahtAmount,
         baht_rate: bahtRate,
+        tenders: cashTenders,
         staff: effectiveSalesCode,
         staffName: effectiveSalesName,
         sale_code: effectiveSalesCode,
@@ -2627,10 +2680,12 @@ export default function POS() {
         orderId={orderId}
         onConfirm={handlePay}
         onAmountChange={setReceivedAmount}
-        onForeignAmountChange={({ thbAmount, thbRate }) => {
+        onForeignAmountChange={({ thbAmount, thbRate, tenders }) => {
           setBahtAmount(thbAmount);
           setBahtRate(thbRate);
+          setCashTenders(Array.isArray(tenders) ? tenders : []);
         }}
+        currencies={erpCurrencies}
         receivedAmount={receivedAmount}
         isDisplayOpen={isDisplayOpen}
         isPaying={isPaying}
