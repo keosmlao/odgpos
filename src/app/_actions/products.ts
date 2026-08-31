@@ -83,8 +83,12 @@ export async function getProductByBarcodeAction(
   const whCode = options.wh_code || "1105";
   const locationCode = options.location_code || "110501";
 
+  // The POS sells fractional quantities (down to 0.01); an ::int cast rejected
+  // them outright ("invalid input syntax for integer: 0.1"), costing the line
+  // its price and stock refresh. Clamping to 1 prices a part-unit sale at the
+  // single-unit tier, since price tiers start at from_qty 1.
   const rows = (await runQuery(
-    `WITH param AS (SELECT $1::int AS qty)
+    `WITH param AS (SELECT GREATEST($1::numeric, 1) AS qty)
      SELECT a.ic_code, c.code AS item_code, a.barcode, a.unit_code, c.name_1 AS item_name,
             COALESCE(b.sale_price1, 0) AS sale_price1, b.from_qty, b.to_qty,
             a.no_point, c.average_cost
