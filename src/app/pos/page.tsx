@@ -29,6 +29,7 @@ import {
   updateShopOrderStatusAction,
 } from '@/app/_actions/shop-orders';
 import { listProductImagesAction } from '@/app/_actions/product-images';
+import { getErpThbRateAction } from '@/app/_actions/fx';
 import {
   getDailySummaryAction,
   commitDailySummaryAction,
@@ -1505,6 +1506,19 @@ export default function POS() {
     const numericRate = Number(String(thbRateInput).replace(/[^0-9]/g, '')) || 0;
     localStorage.setItem('pos_fx_rates', JSON.stringify({ thb: numericRate }));
   }, [thbRateInput]);
+
+  // Take the baht rate from the ERP on every load, so the till buys baht at the
+  // rate the books convert at. A cashier can still type over it for the day.
+  useEffect(() => {
+    let cancelled = false;
+    getErpThbRateAction()
+      .then((res) => {
+        const rate = Number(res?.rate) || 0;
+        if (!cancelled && rate > 0) setThbRateInput(String(rate));
+      })
+      .catch(() => { /* keep the last rate the till used */ });
+    return () => { cancelled = true; };
+  }, []);
 
   /* --- Logic --- */
   const showToast = (message, type = 'success') => {

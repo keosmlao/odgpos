@@ -17,6 +17,24 @@ export async function getFxRatesAction(limit = 10): Promise<Row[]> {
   )) as Row[];
 }
 
+/**
+ * Kip per baht, as the ERP itself values them. erp_currency holds the rate the
+ * other way round — baht per kip, on the kip row ('02'), baht being the base
+ * currency — and every document is converted with it, so the till has to buy
+ * baht at the same rate or the drawer and the books drift apart.
+ */
+export async function getErpThbRateAction(): Promise<{ rate: number | null }> {
+  await requireSession();
+  const row = (await runQuery(
+    "SELECT exchange_rate_present FROM erp_currency WHERE code = '02' LIMIT 1",
+    [],
+    "one"
+  )) as { exchange_rate_present?: unknown } | null;
+  const bahtPerKip = Number(row?.exchange_rate_present);
+  if (!isFinite(bahtPerKip) || bahtPerKip <= 0) return { rate: null };
+  return { rate: Math.round(1 / bahtPerKip) };
+}
+
 /** Record a new LAK-per-THB rate; reports and the POS pick up the latest row. */
 export async function setFxRateAction(rateRaw: number): Promise<{ success: true; rate: number }> {
   const session = await requireSession();
