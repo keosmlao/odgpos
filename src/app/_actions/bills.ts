@@ -73,6 +73,83 @@ async function findStockShortage(
   return `ສະຕ໋ອກບໍ່ພໍ ຂາຍຕິດລົບບໍ່ໄດ້: ${shortages.join(", ")}`;
 }
 
+type RepricedBill = { items: Record<string, unknown>[]; subtotal: number; discount: number; total: number };
+
+/**
+ * Rebuilds a bill's money from server data. The customer shop reaches
+ * saveBillAction without a session, so its prices, per-line discounts and
+ * totals are whatever the client chose to send — only item codes and
+ * quantities are taken at face value. Each line is priced at the quantity tier
+ * on record and the discount is the customer's own rate, neither of which the
+ * request can influence. A staff session is left alone: the till is where
+ * manual discounts and promotion prices legitimately come from.
+ */
+async function repriceForPublicSale(
+  client: PoolClient,
+  items: Record<string, unknown>[],
+  custCode: string
+): Promise<RepricedBill> {
+  const codes = items.map((i) => String(i.item_code || i.id || i.ic_code || i.barcode || "").trim());
+  const quantities = items.map((i) => toDecimal(i.quantity || i.qty || 1));
+  const units = items.map((i) => String(i.unit_code || i.unit || ""));
+
+  // One row per line (WITH ORDINALITY keeps them in order), priced at the tier
+  // the line quantity falls in — the tier rule getProductByBarcodeAction uses.
+  const masterPrices = new Map<number, number>();
+  if (codes.some(Boolean)) {
+    const priceRes = await client.query(
+      `SELECT v.idx, p.sale_price1
+         FROM unnest($1::text[], $2::numeric[], $3::text[]) WITH ORDINALITY AS v(code, qty, unit, idx)
+         LEFT JOIN LATERAL (
+           SELECT sale_price1
+             FROM ic_inventory_price
+            WHERE ic_code = v.code AND currency_code = '02'
+              AND GREATEST(v.qty, 1) BETWEEN from_qty AND COALESCE(to_qty, 999999)
+            ORDER BY (unit_code = v.unit) DESC,
+                     (CURRENT_DATE BETWEEN from_date AND COALESCE(to_date, CURRENT_DATE)) DESC,
+                     from_date DESC, roworder DESC
+            LIMIT 1
+         ) p ON TRUE`,
+      [codes, quantities, units]
+    );
+    for (const row of priceRes.rows) masterPrices.set(Number(row.idx), toDecimal(row.sale_price1));
+  }
+
+  const discountRes = await client.query(
+    `SELECT d.discount_item
+       FROM ar_customer a
+       LEFT JOIN ar_customer_detail d ON d.ar_code = a.code
+      WHERE a.code = $1
+      LIMIT 1`,
+    [custCode]
+  );
+  const rawDiscount = String(discountRes.rows[0]?.discount_item ?? "").replace("%", "").trim();
+  const discountPercent = Math.min(Math.max(toDecimal(rawDiscount), 0), 100);
+
+  let subtotal = 0;
+  let discount = 0;
+  const repriced = items.map((raw, i) => {
+    const masterPrice = masterPrices.get(i + 1) ?? 0;
+    // An item with no price on record keeps the price the client sent: that can
+    // overcharge the customer, never undercharge the shop.
+    const unitPrice = masterPrice > 0 ? masterPrice : Math.max(toDecimal(raw.unitPrice ?? raw.price), 0);
+    const lineSubtotal = unitPrice * quantities[i];
+    const lineDiscount = Math.round((lineSubtotal * discountPercent) / 100);
+    subtotal += lineSubtotal;
+    discount += lineDiscount;
+    return {
+      ...raw,
+      price: unitPrice,
+      unitPrice,
+      discount_amount: lineDiscount,
+      discountAmount: lineDiscount,
+      discount_percent: discountPercent,
+      sum_amount: lineSubtotal - lineDiscount,
+    };
+  });
+  return { items: repriced, subtotal, discount, total: Math.max(subtotal - discount, 0) };
+}
+
 export async function getDocNoAction(): Promise<{ doc_no: string }> {
   await requireSession();
   const now = new Date();
@@ -154,7 +231,8 @@ export type SaveBillResult = { success: boolean; doc_no?: string; exchange_rate?
 /** Per-process guard so schema DDL runs once, not on every sale. */
 let billTablesEnsured = false;
 
-export async function saveBillAction(body: Record<string, unknown>): Promise<SaveBillResult> {
+export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<SaveBillResult> {
+  let body = bodyRaw;
   // Reachable from the customer shop (no session) and the POS (staff session).
   const session = await getSession();
   const client = await pool.connect();
@@ -206,11 +284,19 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
     const whCode = (body.wh_code as string) || "1105";
     const shelfCode = (body.sh_code as string) || "110501";
 
-    const itemsList: Record<string, unknown>[] = Array.isArray(body.items)
+    let itemsList: Record<string, unknown>[] = Array.isArray(body.items)
       ? (body.items as Record<string, unknown>[])
       : Array.isArray(body.bill)
         ? (body.bill as Record<string, unknown>[])
         : [];
+
+    // No session means the customer shop, where every money figure in the
+    // request is client-controlled: re-derive them all before they are used.
+    if (!session && itemsList.length) {
+      const repriced = await repriceForPublicSale(client, itemsList, custCode);
+      itemsList = repriced.items;
+      body = { ...body, subtotal: repriced.subtotal, discount: repriced.discount, total: repriced.total };
+    }
     const computedSubtotal = itemsList.reduce(
       (sum, item) => sum + toDecimal(item.price) * toDecimal(item.quantity || item.qty || 1), 0
     ) * Number(exchangeRate);
