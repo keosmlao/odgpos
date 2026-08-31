@@ -2235,6 +2235,7 @@ export default function POS() {
         baht_amount: bahtAmount,
         baht_rate: bahtRate,
         tenders: cashTenders,
+        pickup_order_no: currentPickupOrder?.orderNo || '',
         staff: effectiveSalesCode,
         staffName: effectiveSalesName,
         sale_code: effectiveSalesCode,

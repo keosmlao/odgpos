@@ -2,7 +2,8 @@
 
 import { runQuery } from "@/lib/db";
 import { getSession, requireSession } from "@/lib/session";
-import { ensureShopOrdersTable } from "@/lib/tables";
+import { ensureOnlineOrdersTable, ensureShopOrdersTable } from "@/lib/tables";
+import { openOrderReservationsSql } from "@/lib/reservations";
 
 type Row = Record<string, unknown>;
 type ShopOrderItem = {
@@ -113,6 +114,36 @@ export async function createShopOrderAction(payload: Row): Promise<{ order_no: s
     });
   }
   if (!cleanItems.length) throw new Error("Invalid items");
+
+  // An order holds the stock it names, so it can only be taken for what the
+  // shop warehouse still has free — on hand, less what other open orders hold.
+  await ensureShopOrdersTable();
+  await ensureOnlineOrdersTable();
+  const wantedByCode = new Map<string, number>();
+  for (const item of cleanItems) {
+    const code = String(item.id || "").trim();
+    if (code) wantedByCode.set(code, (wantedByCode.get(code) ?? 0) + Number(item.quantity || 0));
+  }
+  const availability = (await runQuery(
+    `SELECT v.code, COALESCE(inv.name_1, v.code) AS item_name,
+            COALESCE(f.balance_qty, 0) - COALESCE(res.qty, 0) AS available
+       FROM unnest($1::text[]) AS v(code)
+       JOIN ic_inventory inv ON inv.code = v.code
+       LEFT JOIN LATERAL (
+         SELECT balance_qty
+           FROM sml_ic_function_stock_balance_warehouse_location(
+             '2099-12-31'::date, btrim(v.code)::varchar, '1105'::varchar, '110501'::varchar
+           )
+          LIMIT 1
+       ) f ON TRUE
+       LEFT JOIN (${openOrderReservationsSql("''")}) res ON res.code = v.code
+      WHERE COALESCE(inv.item_type, 0) NOT IN (3, 5)`,
+    [[...wantedByCode.keys()]]
+  )) as { code: string; item_name: string; available: unknown }[];
+  const shortages = availability
+    .filter((row) => (wantedByCode.get(String(row.code)) ?? 0) > Number(row.available || 0))
+    .map((row) => `${row.item_name} (ຍັງເຫຼືອ ${Math.max(Number(row.available || 0), 0)})`);
+  if (shortages.length) throw new Error(`ສິນຄ້າບໍ່ພຽງພໍ: ${shortages.join(", ")}`);
   const discountAmount = Math.round(subtotal * discountPercent / 100 * 100) / 100;
   const total = subtotal - discountAmount;
 

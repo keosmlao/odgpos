@@ -4,7 +4,8 @@ import type { PoolClient } from "pg";
 
 import { pool, runQuery } from "@/lib/db";
 import { getSession, requireSession } from "@/lib/session";
-import { ensureCancelledBillsTable, ensureChangeLogTable, ensureFxRateTable, ensureSavedBillsTable } from "@/lib/tables";
+import { ensureCancelledBillsTable, ensureChangeLogTable, ensureFxRateTable, ensureOnlineOrdersTable, ensureSavedBillsTable, ensureShopOrdersTable } from "@/lib/tables";
+import { openOrderReservationsSql } from "@/lib/reservations";
 import { notifyLineOnBill } from "@/lib/line";
 
 type Row = Record<string, unknown>;
@@ -39,7 +40,8 @@ async function findStockShortage(
   client: PoolClient,
   soldQtyByItem: Map<string, number>,
   whCode: string,
-  shelfCode: string
+  shelfCode: string,
+  pickupOrderNo: string
 ): Promise<string | null> {
   if (!soldQtyByItem.size) return null;
   const codes = [...soldQtyByItem.keys()];
@@ -66,12 +68,26 @@ async function findStockShortage(
       WHERE COALESCE(inv.item_type, 0) NOT IN (3, 5)`,
     [codes, whCode, shelfCode]
   );
+  // Stock promised to orders waiting to be picked up is not available to sell
+  // over the counter — except the order this sale is handing over.
+  const reserved = new Map<string, number>();
+  const reservedRes = await client.query(
+    `SELECT code, qty FROM (${openOrderReservationsSql("$2")}) res WHERE code = ANY($1)`,
+    [codes, pickupOrderNo]
+  );
+  for (const row of reservedRes.rows) reserved.set(String(row.code), toDecimal(row.qty));
+
   const shortages: string[] = [];
   for (const row of res.rows) {
-    const available = toDecimal(row.available);
+    const onHand = toDecimal(row.available);
+    const held = reserved.get(String(row.code)) ?? 0;
+    const available = onHand - held;
     const wanted = soldQtyByItem.get(row.code) ?? 0;
     if (wanted > available) {
-      shortages.push(`${row.item_name} (ຕ້ອງການ ${formatQty(wanted)}, ຄົງເຫຼືອ ${formatQty(available)})`);
+      const detail = held > 0
+        ? `ຕ້ອງການ ${formatQty(wanted)}, ຂາຍໄດ້ ${formatQty(available)} (ຄົງເຫຼືອ ${formatQty(onHand)}, ຈອງໄວ້ ${formatQty(held)})`
+        : `ຕ້ອງການ ${formatQty(wanted)}, ຄົງເຫຼືອ ${formatQty(onHand)}`;
+      shortages.push(`${row.item_name} (${detail})`);
     }
   }
   if (!shortages.length) return null;
@@ -349,7 +365,11 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
 
     // No selling into negative stock: checked before the first write, so a
     // shortage rolls back an empty transaction.
-    const shortage = await findStockShortage(client, soldQtyByItem, whCode, shelfCode);
+    // The order being handed over releases its own reservation as it is billed.
+    const pickupOrderNo = String(body.pickup_order_no || "").trim();
+    await ensureShopOrdersTable();
+    await ensureOnlineOrdersTable();
+    const shortage = await findStockShortage(client, soldQtyByItem, whCode, shelfCode, pickupOrderNo);
     if (shortage) {
       await client.query("ROLLBACK");
       return { success: false, error: shortage };

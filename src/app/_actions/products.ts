@@ -1,7 +1,9 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
+import { openOrderReservationsSql } from "@/lib/reservations";
 import { requireSession } from "@/lib/session";
+import { ensureOnlineOrdersTable, ensureShopOrdersTable } from "@/lib/tables";
 
 // searchProductsAction / getProductByBarcodeAction are staff-only (POS, back office)
 // and may return cost data. getShopProductsAction / getShopPriceListAction stay
@@ -130,9 +132,12 @@ export async function getProductByIdAction(_id: string): Promise<null> {
 }
 
 export async function getShopProductsAction(): Promise<Row[]> {
-
+  // Stock already promised to open orders is not on offer: showing it would let
+  // a second customer order what the first is coming to collect.
+  await ensureShopOrdersTable();
+  await ensureOnlineOrdersTable();
   return (await runQuery(`
-SELECT a.ic_code, ic.name_1 AS ic_name, a.balance_qty,
+SELECT a.ic_code, ic.name_1 AS ic_name, a.balance_qty - COALESCE(res.qty, 0) AS balance_qty,
   cat.name_1  AS cat_name,
   grp.name_1  AS group_name,
   sub.name_1  AS sub_group_name,
@@ -151,7 +156,8 @@ LEFT JOIN LATERAL (
   WHERE ic_code = a.ic_code AND currency_code = '02' AND (to_date IS NULL OR to_date > CURRENT_DATE)
   ORDER BY sale_price1 ASC LIMIT 1
 ) p ON TRUE
-WHERE a.balance_qty > 0 AND a.ic_code LIKE '14%'
+LEFT JOIN (${openOrderReservationsSql("''")}) res ON res.code = a.ic_code
+WHERE a.balance_qty - COALESCE(res.qty, 0) > 0 AND a.ic_code LIKE '14%'
 ORDER BY p.sale_price1, a.ic_code;
 `)) as Row[];
 }
