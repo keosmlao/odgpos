@@ -320,7 +320,6 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
     const maxEarnable = Math.floor((totalAmount2 || totalAmount || 0) / POINTS_RATE_LAK);
     const rawPoint = toDecimal((body.point as number) || (body.earnedPoints as number));
     const sumPoint = Math.max(0, Math.min(Math.floor(rawPoint), maxEarnable));
-    const changeBaht = bahtRate > 0 ? changeAmount / bahtRate : 0;
     // Attribute the document to the logged-in user when there is a session;
     // the client-supplied value is only a fallback for the customer shop flow.
     const creatorCode = session?.code || (body.user_login as string) || "";
@@ -429,25 +428,33 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
         [2, 44, docDate, docNo, "1010201", "1010201", "BCEL01", totalAmount2, docDate, 1, "02", Number(exchangeRate || 1), totalAmount]
       );
     } else {
-      if (bahtAmount > 0) {
-        await client.query(
-          `INSERT INTO cb_trans(trans_type, trans_flag, doc_date, doc_no, doc_ref, total_amount,
-            total_net_amount, cash_amount, total_amount_pay, ap_ar_code, pay_type, doc_format_code,
-            total_other_currency_charge) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [2, 44, docDate, docNo, (body.route_id as string) || (body.doc_ref as string) || "", totalAmount, totalAmount, bahtAmount, totalAmount, custCode, 19, "SPOS", changeBaht]
-        );
-      } else {
-        await client.query(
-          `INSERT INTO cb_trans(trans_type, trans_flag, doc_date, doc_no, total_amount, total_net_amount,
-            total_other_currency, total_amount_pay, ap_ar_code, pay_type, doc_format_code, exchange_rate,
-            total_other_currency_charge) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [2, 44, docDate, docNo, totalAmount, totalAmount, totalAmount, totalAmount, custCode, 1, "SPOS", Number(exchangeRate || 1), changeBaht]
-        );
+      // Cash, in kip or baht or both. The ERP's own documents fill this in one
+      // way (checked against 21k of its cash tenders): cash_amount is what came
+      // in as baht, the base currency, and needs no line of its own;
+      // total_other_currency is the baht value of what came in as another
+      // currency, and gets one doc_type 19 line per currency — trans_number is
+      // that currency's code, amount is in that currency, exchange_rate is its
+      // rate to baht. Totals here are baht, so what the customer settled in
+      // baht is capped at the bill and the rest is the kip half.
+      const bahtPaid = Math.min(Math.max(bahtAmount, 0), totalAmount);
+      const kipPaidInBaht = Math.max(totalAmount - bahtPaid, 0);
+      const rate = Number(exchangeRate || 1);
+      const kipTotal = totalAmount2 || (rate ? totalAmount / rate : 0);
+      const kipPaid = Math.max(Math.round(kipTotal - (rate ? bahtPaid / rate : 0)), 0);
+
+      await client.query(
+        `INSERT INTO cb_trans(trans_type, trans_flag, doc_date, doc_no, doc_ref, total_amount, total_net_amount,
+          cash_amount, total_other_currency, total_amount_pay, ap_ar_code, pay_type, doc_format_code, exchange_rate)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [2, 44, docDate, docNo, (body.route_id as string) || (body.doc_ref as string) || "",
+          totalAmount, totalAmount, bahtPaid, kipPaidInBaht, totalAmount, custCode, 1, "SPOS", rate]
+      );
+      if (kipPaid > 0) {
         await client.query(
           `INSERT INTO cb_trans_detail(trans_type, trans_flag, doc_date, doc_no, trans_number, bank_code, bank_branch,
             amount, chq_due_date, doc_type, currency_code, exchange_rate, sum_amount_2)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [2, 44, docDate, docNo, "02", "", "", totalAmount2, docDate, 19, "02", Number(exchangeRate || 1), totalAmount]
+          [2, 44, docDate, docNo, "02", "", "", kipPaid, docDate, 19, "02", rate, kipPaidInBaht]
         );
       }
     }
@@ -473,13 +480,22 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
       await client.query(
         `INSERT INTO pos_change_log (doc_no, total_amount, received_amount, change_amount, payment_type, received_currency, exchange_rate, created_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())`,
-        [docNo, totalAmount, toDecimal((body.receivedAmount as number) || (body.received as number) || totalAmount), changeAmount, paymentMethod || "cash", receivedCurrency, changeExchangeRate || 0]
+        // Kip throughout: received and change arrive in kip, so the total has to
+        // be the kip figure too (totalAmount is baht, the ERP's base currency).
+        [docNo, totalAmount2 || totalAmount, toDecimal((body.receivedAmount as number) || (body.received as number) || totalAmount2 || totalAmount), changeAmount, paymentMethod || "cash", receivedCurrency, changeExchangeRate || 0]
       );
     }
     if (bahtRate > 0) {
       await ensureFxRateTable();
+      // Only when the rate actually moves. A row per bill had grown this to
+      // 1,929 rows holding two distinct rates; readers take the latest row.
       await client.query(
-        "INSERT INTO pos_fx_rates (base_currency, foreign_currency, rate, doc_no, created_at) VALUES ($1,$2,$3,$4,NOW())",
+        `INSERT INTO pos_fx_rates (base_currency, foreign_currency, rate, doc_no, created_at)
+         SELECT $1, $2, $3, $4, NOW()
+          WHERE NOT EXISTS (
+            SELECT 1 FROM (SELECT rate FROM pos_fx_rates ORDER BY created_at DESC LIMIT 1) latest
+             WHERE latest.rate = $3::numeric
+          )`,
         ["LAK", "THB", bahtRate, docNo]
       );
     }
