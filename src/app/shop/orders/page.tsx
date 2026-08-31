@@ -7,10 +7,17 @@ import { getPosBillsAction, getPosBillAction } from '@/app/_actions/bills'
 import { getShopOrdersAction, getShopOrderAction } from '@/app/_actions/shop-orders'
 import { listProductImagesAction } from '@/app/_actions/product-images'
 
+/** The shop link the customer arrived through; read on demand so callers that
+ *  run outside render (an order being opened) never hold a stale copy. */
+const readCustomerCode = () => {
+  if (typeof window === 'undefined') return ''
+  try { return localStorage.getItem('pos_shop_custcode') || '' } catch { return '' }
+}
+
 const OrderTracking = () => {
   const { orderNo } = useParams()
   const [query, setQuery] = useState('')
-  const customerCode = typeof window !== 'undefined' ? localStorage.getItem('pos_shop_custcode') || '' : ''
+  const customerCode = readCustomerCode()
   const [loading, setLoading] = useState(false)
   const [orders, setOrders] = useState([])
   const [error, setError] = useState('')
@@ -24,6 +31,12 @@ const OrderTracking = () => {
     setError('')
     setSelectedOrder(null)
     setDetailError('')
+    if (!customerCode) {
+      setOrders([])
+      setError('ກະລຸນາເປີດຈາກລິ້ງຮ້ານຂອງທ່ານກ່ອນ ຈຶ່ງຈະເບິ່ງອໍເດີໄດ້')
+      setLoading(false)
+      return
+    }
     try {
       const [shopRes, posRes] = await Promise.all([
         getShopOrdersAction(query.trim(), customerCode),
@@ -94,9 +107,10 @@ const OrderTracking = () => {
     setDetailLoading(true)
     setDetailError('')
     try {
+      const scopedCustomer = readCustomerCode()
       const res = source === 'pos'
-        ? await getPosBillAction(orderNo)
-        : await getShopOrderAction(orderNo)
+        ? await getPosBillAction(orderNo, scopedCustomer)
+        : await getShopOrderAction(orderNo, scopedCustomer)
       const normalized = source === 'pos'
         ? {
             ...res,

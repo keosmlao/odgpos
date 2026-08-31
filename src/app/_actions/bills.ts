@@ -182,6 +182,11 @@ export async function searchBillsAction(docNoRaw: string): Promise<Row[]> {
 }
 
 export async function getPosBillsAction(query = "", customerCode = ""): Promise<Row[]> {
+  // Reachable from the customer shop (no session), where it may only ever list
+  // one customer's own bills — doc numbers run in sequence, so an unscoped list
+  // hands over every customer's name, phone and totals. Staff see everything.
+  const session = await getSession();
+  if (!session && !(customerCode || "").trim()) return [];
   let sql = `
     SELECT t.doc_no, t.doc_date, t.cust_code, t.total_amount AS total,
       c.name_1 AS customer_name, c.telephone AS customer_phone,
@@ -208,14 +213,19 @@ export async function getPosBillsAction(query = "", customerCode = ""): Promise<
   return (await runQuery(sql, params)) as Row[];
 }
 
-export async function getPosBillAction(docNo: string): Promise<(Row & { items: Row[] }) | null> {
+export async function getPosBillAction(docNo: string, customerCode = ""): Promise<(Row & { items: Row[] }) | null> {
+  // Same rule as the list: without a session the bill has to belong to the
+  // customer asking for it, or sequential doc numbers make every bill readable.
+  const session = await getSession();
+  const scopedCustomer = (customerCode || "").trim();
+  if (!session && !scopedCustomer) return null;
   const header = (await runQuery(
     `SELECT t.doc_no, t.doc_date, t.cust_code, t.total_amount AS total,
             c.name_1 AS customer_name, c.telephone AS customer_phone
        FROM ic_trans t
        LEFT JOIN ar_customer c ON c.code = t.cust_code
-      WHERE t.doc_no = $1 LIMIT 1`,
-    [docNo],
+      WHERE t.doc_no = $1 AND ($2 = '' OR t.cust_code = $2) LIMIT 1`,
+    [docNo, session ? "" : scopedCustomer],
     "one"
   )) as Row | null;
   if (!header) return null;

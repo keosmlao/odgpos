@@ -1,7 +1,7 @@
 "use server";
 
 import { runQuery } from "@/lib/db";
-import { requireSession } from "@/lib/session";
+import { getSession, requireSession } from "@/lib/session";
 import { ensureShopOrdersTable } from "@/lib/tables";
 
 type Row = Record<string, unknown>;
@@ -33,6 +33,10 @@ async function nextShopOrderNo() {
 }
 
 export async function getShopOrdersAction(query = "", customerCode = "", status = ""): Promise<Row[]> {
+  // The customer shop calls this without a session, so it may only list that
+  // one customer's orders; the till, which has a session, lists them all.
+  const session = await getSession();
+  if (!session && !(customerCode || "").trim()) return [];
   await ensureShopOrdersTable();
   let sql = "SELECT order_no, status, customer_name, customer_phone, total, created_at FROM pos_shop_orders WHERE 1=1";
   const params: unknown[] = [];
@@ -51,9 +55,16 @@ export async function getShopOrdersAction(query = "", customerCode = "", status 
   return (await runQuery(sql, params)) as Row[];
 }
 
-export async function getShopOrderAction(orderNo: string): Promise<Row | null> {
+export async function getShopOrderAction(orderNo: string, customerCode = ""): Promise<Row | null> {
+  const session = await getSession();
+  const scopedCustomer = (customerCode || "").trim();
+  if (!session && !scopedCustomer) return null;
   await ensureShopOrdersTable();
-  return (await runQuery("SELECT * FROM pos_shop_orders WHERE order_no = $1", [orderNo], "one")) as Row | null;
+  return (await runQuery(
+    "SELECT * FROM pos_shop_orders WHERE order_no = $1 AND ($2 = '' OR customer_code = $2)",
+    [orderNo, session ? "" : scopedCustomer],
+    "one"
+  )) as Row | null;
 }
 
 export async function createShopOrderAction(payload: Row): Promise<{ order_no: string; created_at: unknown }> {
