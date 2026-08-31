@@ -1,5 +1,7 @@
 "use server";
 
+import type { PoolClient } from "pg";
+
 import { pool, runQuery } from "@/lib/db";
 import { getSession, requireSession } from "@/lib/session";
 import { ensureChangeLogTable, ensureFxRateTable, ensureSavedBillsTable } from "@/lib/tables";
@@ -15,6 +17,60 @@ function toDecimal(value: unknown, defaultVal = 0): number {
   }
   const num = Number(value);
   return isFinite(num) ? num : defaultVal;
+}
+
+function formatQty(value: number): string {
+  return Number(value.toFixed(2)).toLocaleString("en-US");
+}
+
+/**
+ * Returns a Lao message naming every line the selling warehouse cannot cover,
+ * or null when the whole bill fits in stock. It reads the same SML balance
+ * function the POS shows the cashier (warehouse + shelf), not the company-wide
+ * ic_inventory.balance_qty, so the check matches the quantity on screen.
+ * Item types 3/5 are non-stock (service) lines: never deducted, never checked.
+ */
+async function findStockShortage(
+  client: PoolClient,
+  soldQtyByItem: Map<string, number>,
+  whCode: string,
+  shelfCode: string
+): Promise<string | null> {
+  if (!soldQtyByItem.size) return null;
+  const codes = [...soldQtyByItem.keys()];
+  // Lock the inventory rows first: without it two tills can both pass the check
+  // on the same last unit. The balance_qty update at the end of the sale takes
+  // these same locks, so this only moves the lock earlier in the transaction.
+  await client.query(
+    "SELECT 1 FROM ic_inventory WHERE code = ANY($1) ORDER BY code FOR UPDATE",
+    [codes]
+  );
+  // Inner join: a code with no ic_inventory row is not stock-tracked here, so
+  // there is nothing to drive negative.
+  const res = await client.query(
+    `SELECT v.code, COALESCE(inv.name_1, v.code) AS item_name, COALESCE(f.balance_qty, 0) AS available
+       FROM unnest($1::text[]) AS v(code)
+       JOIN ic_inventory inv ON inv.code = v.code
+       LEFT JOIN LATERAL (
+         SELECT balance_qty
+           FROM sml_ic_function_stock_balance_warehouse_location(
+             '2099-12-31'::date, btrim(v.code)::varchar, $2::varchar, $3::varchar
+           )
+          LIMIT 1
+       ) f ON TRUE
+      WHERE COALESCE(inv.item_type, 0) NOT IN (3, 5)`,
+    [codes, whCode, shelfCode]
+  );
+  const shortages: string[] = [];
+  for (const row of res.rows) {
+    const available = toDecimal(row.available);
+    const wanted = soldQtyByItem.get(row.code) ?? 0;
+    if (wanted > available) {
+      shortages.push(`${row.item_name} (ຕ້ອງການ ${formatQty(wanted)}, ຄົງເຫຼືອ ${formatQty(available)})`);
+    }
+  }
+  if (!shortages.length) return null;
+  return `ສະຕ໋ອກບໍ່ພໍ ຂາຍຕິດລົບບໍ່ໄດ້: ${shortages.join(", ")}`;
 }
 
 export async function getDocNoAction(): Promise<{ doc_no: string }> {
@@ -183,6 +239,22 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
     // the client-supplied value is only a fallback for the customer shop flow.
     const creatorCode = session?.code || (body.user_login as string) || "";
 
+    // Aggregated per item so a bill listing the same code twice counts once.
+    const soldQtyByItem = new Map<string, number>();
+    for (const rawItem of itemsList) {
+      const code = String(rawItem.item_code || rawItem.id || rawItem.ic_code || rawItem.barcode || "");
+      if (!code) continue;
+      soldQtyByItem.set(code, (soldQtyByItem.get(code) ?? 0) + toDecimal(rawItem.quantity || rawItem.qty || 1));
+    }
+
+    // No selling into negative stock: checked before the first write, so a
+    // shortage rolls back an empty transaction.
+    const shortage = await findStockShortage(client, soldQtyByItem, whCode, shelfCode);
+    if (shortage) {
+      await client.query("ROLLBACK");
+      return { success: false, error: shortage };
+    }
+
     await client.query(
       `INSERT INTO ic_trans(doc_ref, trans_type, trans_flag, doc_date, doc_no, vat_type, cust_code, branch_code, currency_code, exchange_rate, total_value, total_amount, doc_time,
         doc_format_code, creator_code, total_value_2, total_amount_2, inquiry_type, sale_code, side_code, department_code, sum_point)
@@ -202,9 +274,6 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
       for (const r of avgRes.rows) avgCostMap[r.code] = r.average_cost;
     }
 
-    // Aggregated per item so a bill listing the same code twice deducts once.
-    const soldQtyByItem = new Map<string, number>();
-
     for (const rawItem of itemsList) {
       const unitPrice = toDecimal(rawItem.unitPrice || rawItem.price) * Number(exchangeRate);
       const quantity = toDecimal(rawItem.quantity || rawItem.qty || 1);
@@ -220,8 +289,6 @@ export async function saveBillAction(body: Record<string, unknown>): Promise<Sav
       // SML convention: sum_of_cost is the TOTAL line cost (unit avg cost x qty),
       // matching what the ERP's cost recalculation writes back.
       const lineCost = Math.round(averageCost * quantity * 100) / 100;
-      if (itemCode) soldQtyByItem.set(String(itemCode), (soldQtyByItem.get(String(itemCode)) ?? 0) + quantity);
-
       await client.query(
         `INSERT INTO ic_trans_detail (
           trans_type, trans_flag, doc_date, doc_no, cust_code,

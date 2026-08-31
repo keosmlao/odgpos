@@ -3,7 +3,7 @@ import { Search, X } from "lucide-react";
 
 const fmt = (n: number) => (Number(n) || 0).toLocaleString();
 
-type Product = { id?: string; name?: string; price?: number };
+type Product = { id?: string; name?: string; price?: number; stock?: number | null };
 
 type Props = {
   isOpen: boolean;
@@ -63,21 +63,39 @@ export default function ProductSearchModal({
               {searchTerm ? "No products found" : "Type to search products"}
             </div>
           ) : (
-            results.map((product, idx) => (
-              <button
-                key={(product.id as string) || idx}
-                onClick={() => { onSelect(product); onClose(); }}
-                className="flex w-full items-center justify-between gap-3 px-4 py-3 border-b border-slate-50 last:border-0 hover:bg-slate-50 transition-colors text-left"
-              >
-                <div className="min-w-0">
-                  <div className="text-[13px] font-bold text-slate-800 truncate">{product.name}</div>
-                  <div className="text-[10px] font-mono text-slate-400 mt-0.5">#{product.id}</div>
-                </div>
-                <div className="text-[14px] font-black tabular-nums text-slate-900 shrink-0">
-                  {fmt(Number(product.price) || 0)}&nbsp;<span className="text-slate-400 text-[11px]">₭</span>
-                </div>
-              </button>
-            ))
+            results.map((product, idx) => {
+              // Stock is only known for stock-tracked items; null means "no figure",
+              // which must not read as "out of stock".
+              const stock = Number.isFinite(Number(product.stock)) ? Number(product.stock) : null;
+              const outOfStock = stock !== null && stock <= 0;
+              return (
+                <button
+                  key={(product.id as string) || idx}
+                  disabled={outOfStock}
+                  onClick={() => { onSelect(product); onClose(); }}
+                  className={`flex w-full items-center justify-between gap-3 px-4 py-3 border-b border-slate-50 last:border-0 transition-colors text-left ${
+                    outOfStock ? "opacity-50 cursor-not-allowed" : "hover:bg-slate-50"
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <div className="text-[13px] font-bold text-slate-800 truncate">{product.name}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[10px] font-mono text-slate-400">#{product.id}</span>
+                      {stock !== null ? (
+                        <span
+                          className={`text-[10px] font-bold ${outOfStock ? "text-rose-500" : "text-emerald-600"}`}
+                        >
+                          {outOfStock ? "ໝົດສະຕ໋ອກ" : `ສະຕ໋ອກ: ${fmt(stock)}`}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="text-[14px] font-black tabular-nums text-slate-900 shrink-0">
+                    {fmt(Number(product.price) || 0)}&nbsp;<span className="text-slate-400 text-[11px]">₭</span>
+                  </div>
+                </button>
+              );
+            })
           )}
         </div>
       </div>

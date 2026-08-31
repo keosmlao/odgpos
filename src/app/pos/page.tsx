@@ -93,6 +93,8 @@ const toNumber = (value) => {
 const formatPrice = (price) => toNumber(price).toLocaleString();
 const normalizePrice = (raw) => toNumber(raw);
 const normalizeQty = (raw) => Number.isFinite(Number(raw)) ? Number(raw) : null;
+const formatQtyLabel = (value) => Number(Number(value).toFixed(2)).toLocaleString();
+const OUT_OF_STOCK_MSG = 'ໝົດສະຕ໋ອກ ຂາຍຕິດລົບບໍ່ໄດ້';
 
 const normalizeOrderId = (raw) => {
   if (!raw || typeof raw !== 'string') return raw;
@@ -1689,7 +1691,40 @@ export default function POS() {
     const parsedQuantity = Number(newQuantity);
     const resolvedQuantity = Number.isFinite(parsedQuantity) ? parsedQuantity : item.quantity;
     const minQty = 0.01;
-    const safeQuantity = Math.max(minQty, Number(resolvedQuantity.toFixed(2)));
+    const requestedQuantity = Math.max(minQty, Number(resolvedQuantity.toFixed(2)));
+
+    // Price and on-hand are read together: the tier price depends on quantity,
+    // and a line may never be taken past what the warehouse actually holds.
+    let latestPrice;
+    let latestStock = normalizeQty(item.stock);
+    try {
+      const lookupCode = item.barcode || item.id;
+      let product = null;
+      if (lookupCode) {
+        product = await getProductByBarcodeAction(lookupCode, requestedQuantity);
+      }
+      if (!product && item.id && item.id !== lookupCode) {
+        product = await getProductByIdAction(item.id);
+      }
+      if (product) {
+        const normalized = normalizeApiProduct(product);
+        latestPrice = normalized.price;
+        if (normalizeQty(normalized.stock) !== null) latestStock = normalizeQty(normalized.stock);
+      }
+    } catch (error) {
+      console.error('Failed to fetch price:', error);
+    }
+
+    let safeQuantity = requestedQuantity;
+    if (latestStock !== null && requestedQuantity > latestStock) {
+      const allowed = Math.max(0, Number(latestStock.toFixed(2)));
+      if (allowed < minQty) {
+        showToast(`${item.name} ${OUT_OF_STOCK_MSG}`, 'error');
+        return;
+      }
+      safeQuantity = allowed;
+      showToast(`${item.name} ສະຕ໋ອກເຫຼືອ ${formatQtyLabel(allowed)} ເທົ່ານັ້ນ`, 'error');
+    }
     if (safeQuantity === item.quantity) return;
     const matchCodes = new Set([item.id, item.item_code, item.barcode].filter(Boolean));
     const hasGiftItems = Array.isArray(item.gift_items) && item.gift_items.length > 0;
@@ -1713,7 +1748,12 @@ export default function POS() {
           .filter((entry) => !(entry.is_promo_gift && matchCodes.has(entry.gift_for_code)))
           .map((entry) => {
             if (entry.id === id) {
-              return { ...entry, quantity: safeQuantity, ...(Number.isFinite(nextPrice) ? { price: nextPrice } : {}) };
+              return {
+                ...entry,
+                quantity: safeQuantity,
+                ...(Number.isFinite(nextPrice) ? { price: nextPrice } : {}),
+                ...(latestStock !== null ? { stock: latestStock } : {}),
+              };
             }
             return entry;
           });
@@ -1724,6 +1764,7 @@ export default function POS() {
             ...entry,
             quantity: safeQuantity,
             ...(Number.isFinite(nextPrice) ? { price: nextPrice } : {}),
+            ...(latestStock !== null ? { stock: latestStock } : {}),
           };
         }
         if (shouldSyncGift && entry.is_promo_gift && matchCodes.has(entry.gift_for_code)) {
@@ -1748,28 +1789,8 @@ export default function POS() {
       }
     };
 
-    try {
-      const lookupCode = item.barcode || item.id;
-      let product = null;
-      if (lookupCode) {
-        product = await getProductByBarcodeAction(lookupCode, safeQuantity);
-      }
-      if (!product && item.id && item.id !== lookupCode) {
-        product = await getProductByIdAction(item.id);
-      }
-      if (product) {
-        const normalized = normalizeApiProduct(product);
-        setItems(prev => applyQuantityUpdate(prev, normalized.price));
-        await syncMissingGifts();
-        return;
-      }
-      setItems(prev => applyQuantityUpdate(prev));
-      await syncMissingGifts();
-    } catch (error) {
-      console.error('Failed to fetch price:', error);
-      setItems(prev => applyQuantityUpdate(prev));
-      await syncMissingGifts();
-    }
+    setItems(prev => applyQuantityUpdate(prev, latestPrice));
+    await syncMissingGifts();
   };
   const updateQty = (id, delta) => {
     const item = items.find(i => i.id === id);
@@ -1826,6 +1847,11 @@ export default function POS() {
   };
 
   const addItem = async (product) => {
+    const available = normalizeQty(product?.stock);
+    if (available !== null && available <= 0) {
+      showToast(`${product?.name || 'ສິນຄ້າ'} ${OUT_OF_STOCK_MSG}`, 'error');
+      return false;
+    }
     await ensureOrderId();
     const exists = items.find(i => i.id === product.id);
     if (exists) {
@@ -1896,7 +1922,20 @@ export default function POS() {
     if (!giftProduct) return;
     const sourceCode = sourceProduct?.id || sourceProduct?.barcode || sourceProduct?.item_code || 'base';
     const giftId = `${giftProduct.id}__gift__${sourceCode}`;
-    const qty = Math.max(Number(giftQty || 1), 1);
+    let qty = Math.max(Number(giftQty || 1), 1);
+    const giftStock = normalizeQty(giftProduct.stock);
+    if (giftStock !== null) {
+      const alreadyInCart = Number(items.find((entry) => entry.id === giftId)?.quantity) || 0;
+      const allowed = Number((giftStock - alreadyInCart).toFixed(2));
+      if (allowed <= 0) {
+        showToast(`ຂອງແຖມ ${giftProduct.name} ${OUT_OF_STOCK_MSG}`, 'error');
+        return;
+      }
+      if (qty > allowed) {
+        qty = allowed;
+        showToast(`ຂອງແຖມ ${giftProduct.name} ສະຕ໋ອກເຫຼືອ ${formatQtyLabel(allowed)} ເທົ່ານັ້ນ`, 'error');
+      }
+    }
     const giftItem = {
       ...giftProduct,
       id: giftId,
