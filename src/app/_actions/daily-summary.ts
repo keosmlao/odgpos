@@ -37,14 +37,14 @@ async function queryTodayUnsent(): Promise<{ summary: DailySummary; bills: Row[]
         COALESCE(SUM(CASE WHEN ${paymentTypeSql} = 'transfer' THEN t.total_amount_2 ELSE 0 END), 0) AS total_transfer,
         COUNT(*) AS count_bills
        FROM ic_trans t ${paymentJoin}
-      WHERE t.doc_format_code = 'SPOS' AND t.doc_date = CURRENT_DATE ${notInClause}`,
+      WHERE t.doc_format_code = 'SPOS' AND COALESCE(t.is_cancel, 0) = 0 AND t.doc_date = CURRENT_DATE ${notInClause}`,
     params
   )) as DailySummary[];
   const bills = (await runQuery(
     `SELECT t.doc_no AS order_id, t.doc_date, t.creator_code AS staff, t.total_amount_2 AS total,
             ${paymentTypeSql} AS payment_type
        FROM ic_trans t ${paymentJoin}
-      WHERE t.doc_format_code = 'SPOS' AND t.doc_date = CURRENT_DATE ${notInClause}
+      WHERE t.doc_format_code = 'SPOS' AND COALESCE(t.is_cancel, 0) = 0 AND t.doc_date = CURRENT_DATE ${notInClause}
       ORDER BY t.doc_no DESC LIMIT 200`,
     params
   )) as Row[];

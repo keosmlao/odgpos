@@ -14,6 +14,7 @@ import {
   searchBillsAction,
   getPosBillAction,
   saveBillAction,
+  cancelBillAction,
 } from '@/app/_actions/bills';
 import {
   searchCustomersAction,
@@ -2101,13 +2102,35 @@ export default function POS() {
     fetchDailySummary();
   }, [showDailyModal]);
 
-  const confirmCancelBill = () => {
+  const confirmCancelBill = async (payload) => {
+    const bill = payload?.bill;
+    const reason = payload?.reason;
+    // The modal searches saved bills, so a chosen one has to be voided in the
+    // ERP — stock back, points back, cash book removed — not just cleared off
+    // the screen. Clearing the cart is only right when it is that same bill.
+    const docNo = String(bill?.doc_no || bill?.orderId || '').trim();
+    if (docNo) {
+      let res;
+      try {
+        res = await cancelBillAction(docNo, reason || '');
+      } catch {
+        showToast('ຍົກເລີກບິນບໍ່ສຳເລັດ', 'error');
+        return;
+      }
+      if (!res?.success) {
+        showToast(res?.error || 'ຍົກເລີກບິນບໍ່ສຳເລັດ', 'error');
+        return;
+      }
+      showToast(`ຍົກເລີກບິນ ${docNo} ສຳເລັດ`, 'success');
+      setShowCancelBillModal(false);
+      if (normalizeOrderId(orderId) !== docNo) return;
+    }
     setItems([]);
     setSelectedMember(DEFAULT_MEMBER);
     setOrderId(null);
     setCurrentPickupOrder(null);
     setShowCancelBillModal(false);
-    showToast('ຍົກເລີກບິນສໍາເລັດ', 'success');
+    if (!docNo) showToast('ລ້າງບິນສຳເລັດ', 'success');
   };
 
   const completePayment = async () => {
@@ -2517,7 +2540,7 @@ export default function POS() {
             { id: 'hold',    label: 'ພັກບິນ',        icon: Pause,         onClick: holdBill, hint: items.length ? 'ພັກບິນປະຈຸບັນ' : 'ບໍ່ມີລາຍການ' },
             { id: 'recall',  label: 'ບິນພັກ',        icon: RotateCcw,     onClick: () => setShowHeldModal(true), badge: heldBills.length },
             { id: 'pickup',  label: 'ຮັບອໍເດີ',      icon: Package,       onClick: () => { setShowPickupModal(true); setOnlineQuery(''); }, badge: pendingPickupCount },
-            { id: 'cancel',  label: 'ຍົກເລີກບິນ',    icon: Trash2,        onClick: () => { if (!items.length) { alert('ບໍ່ມີບິນທີ່ຈະຍົກເລີກ'); return; } setShowCancelBillModal(true); } },
+            { id: 'cancel',  label: 'ຍົກເລີກບິນ',    icon: Trash2,        onClick: () => setShowCancelBillModal(true) },
             { id: 'daily',   label: 'ສະຫຼຸບລາຍວັນ',  icon: ClipboardList, onClick: () => setShowDailyModal(true) },
             { id: 'reprint', label: 'ພິມຊ້ຳ',         icon: Printer,       onClick: () => { setShowReprintModal(true); setReprintError(''); } },
             { id: 'display', label: 'ຈໍສະແດງ',       icon: Monitor,       onClick: isDisplayOpen ? () => customerWindow.current?.close() : openCustomerDisplay, active: isDisplayOpen },

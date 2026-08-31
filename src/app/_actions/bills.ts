@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 import { pool, runQuery } from "@/lib/db";
 import { getSession, requireSession } from "@/lib/session";
-import { ensureChangeLogTable, ensureFxRateTable, ensureSavedBillsTable } from "@/lib/tables";
+import { ensureCancelledBillsTable, ensureChangeLogTable, ensureFxRateTable, ensureSavedBillsTable } from "@/lib/tables";
 import { notifyLineOnBill } from "@/lib/line";
 
 type Row = Record<string, unknown>;
@@ -193,7 +193,7 @@ export async function getPosBillsAction(query = "", customerCode = ""): Promise<
       (SELECT COUNT(*) FROM ic_trans_detail d WHERE d.doc_no = t.doc_no) AS item_count
     FROM ic_trans t
     LEFT JOIN ar_customer c ON c.code = t.cust_code
-    WHERE t.doc_format_code = 'SPOS' AND t.trans_flag = 44
+    WHERE t.doc_format_code = 'SPOS' AND t.trans_flag = 44 AND COALESCE(t.is_cancel, 0) = 0
   `;
   const params: unknown[] = [];
   let idx = 1;
@@ -520,6 +520,87 @@ export async function saveBillAction(bodyRaw: Record<string, unknown>): Promise<
     // Log details server-side only — raw PG errors disclose schema to the client.
     console.error("Error saving POS bill:", exc);
     return { success: false, error: "Unable to save bill" };
+  } finally {
+    client.release();
+  }
+}
+
+export type CancelBillResult = { success: boolean; error?: string };
+
+/**
+ * Voids a saved POS sale. Three things have to move together, because the ERP
+ * keeps stock in two places: ic_inventory.balance_qty is the denormalised
+ * on-hand the sale deducts by hand, while the balance SML computes comes from
+ * ic_trans_detail — and its function reads those rows with no reference to the
+ * header, filtering on last_status = 0 alone. So is_cancel on the header does
+ * not give the stock back on its own; the movement rows have to be retired too.
+ */
+export async function cancelBillAction(docNoRaw: string, reasonRaw: string): Promise<CancelBillResult> {
+  const session = await requireSession();
+  const docNo = (docNoRaw || "").trim();
+  const reason = (reasonRaw || "").trim();
+  if (!docNo) return { success: false, error: "ບໍ່ໄດ້ລະບຸເລກບິນ" };
+  if (!reason) return { success: false, error: "ກະລຸນາລະບຸເຫດຜົນການຍົກເລີກ" };
+
+  await ensureCancelledBillsTable();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const head = await client.query(
+      `SELECT doc_no, cust_code, COALESCE(sum_point, 0) AS sum_point,
+              COALESCE(total_amount_2, total_amount, 0) AS total, COALESCE(is_cancel, 0) AS is_cancel
+         FROM ic_trans
+        WHERE doc_no = $1 AND trans_flag = 44 AND doc_format_code = 'SPOS'
+        FOR UPDATE`,
+      [docNo]
+    );
+    const bill = head.rows[0];
+    if (!bill) {
+      await client.query("ROLLBACK");
+      return { success: false, error: `ບໍ່ພົບບິນ ${docNo}` };
+    }
+    if (Number(bill.is_cancel) === 1) {
+      await client.query("ROLLBACK");
+      return { success: false, error: `ບິນ ${docNo} ຖືກຍົກເລີກໄປແລ້ວ` };
+    }
+
+    // Give the on-hand figure back, skipping non-stock items exactly as the sale
+    // skipped them when it deducted.
+    await client.query(
+      `UPDATE ic_inventory SET balance_qty = COALESCE(balance_qty, 0) + v.qty
+         FROM (SELECT item_code AS code, SUM(qty) AS qty FROM ic_trans_detail WHERE doc_no = $1 GROUP BY item_code) v
+        WHERE ic_inventory.code = v.code AND COALESCE(ic_inventory.item_type, 0) NOT IN (3, 5)`,
+      [docNo]
+    );
+    // Retire the movement rows so SML's computed balance stops counting the sale.
+    await client.query("UPDATE ic_trans_detail SET last_status = 1 WHERE doc_no = $1", [docNo]);
+
+    const sumPoint = toDecimal(bill.sum_point);
+    if (sumPoint > 0 && bill.cust_code) {
+      await client.query(
+        "UPDATE ar_customer SET point_balance = GREATEST(COALESCE(point_balance, 0) - $1, 0) WHERE code = $2",
+        [sumPoint, bill.cust_code]
+      );
+    }
+
+    await client.query("DELETE FROM cb_trans_detail WHERE doc_no = $1", [docNo]);
+    await client.query("DELETE FROM cb_trans WHERE doc_no = $1", [docNo]);
+
+    await client.query(
+      `UPDATE ic_trans SET is_cancel = 1, cancel_code = $2, cancel_datetime = NOW() WHERE doc_no = $1`,
+      [docNo, session.code || ""]
+    );
+    await client.query(
+      "INSERT INTO pos_cancelled_bills (doc_no, reason, cancelled_by, total) VALUES ($1, $2, $3, $4)",
+      [docNo, reason, session.code || "", toDecimal(bill.total)]
+    );
+
+    await client.query("COMMIT");
+    return { success: true };
+  } catch (exc) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Error cancelling POS bill:", exc);
+    return { success: false, error: "ຍົກເລີກບິນບໍ່ສຳເລັດ" };
   } finally {
     client.release();
   }

@@ -151,6 +151,17 @@ export async function ensureSavedBillsTable() {
   );`, [], "none");
 }
 
+export async function ensureCancelledBillsTable() {
+  await runQuery(`CREATE TABLE IF NOT EXISTS pos_cancelled_bills (
+    id SERIAL PRIMARY KEY,
+    doc_no TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    cancelled_by TEXT,
+    total NUMERIC,
+    created_at TIMESTAMP DEFAULT NOW()
+  );`, [], "none");
+}
+
 export async function ensureDailyClosureTable() {
   await runQuery(`CREATE TABLE IF NOT EXISTS pos_daily_closure (
     id SERIAL PRIMARY KEY,

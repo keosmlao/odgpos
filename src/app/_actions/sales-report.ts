@@ -42,7 +42,7 @@ export type SalesReport = {
   recentBills: Row[];
 };
 
-const BILL_FILTER = `t.doc_format_code = 'SPOS' AND t.trans_flag = 44 AND t.doc_date BETWEEN $1 AND $2`;
+const BILL_FILTER = `t.doc_format_code = 'SPOS' AND t.trans_flag = 44 AND COALESCE(t.is_cancel, 0) = 0 AND t.doc_date BETWEEN $1 AND $2`;
 
 /**
  * ic_trans has no payment_type column — payment method is derived from cb_trans:
@@ -205,14 +205,15 @@ export async function getSalesReportAction(range: SalesReportRange): Promise<Sal
     "one"
   )) as Row | null;
 
-  // THB: baht-paid bills store the received baht in cb_trans.cash_amount with pay_type 19.
+  // THB: cb_trans.cash_amount is the baht a bill was settled with (the ERP's
+  // base currency), so any non-zero value is a baht payment.
   const bahtRow = (await q(
     "baht-received",
     `SELECT COALESCE(SUM(cb2.cash_amount), 0) AS thb_received, COUNT(*) AS thb_bills
        FROM cb_trans cb2
        JOIN ic_trans t ON t.doc_no = cb2.doc_no
       WHERE ${BILL_FILTER}
-        AND cb2.doc_format_code = 'SPOS' AND cb2.trans_flag = 44 AND cb2.pay_type = 19`,
+        AND cb2.doc_format_code = 'SPOS' AND cb2.trans_flag = 44 AND COALESCE(cb2.cash_amount, 0) <> 0`,
     params,
     "one"
   )) as Row | null;
