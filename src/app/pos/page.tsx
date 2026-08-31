@@ -28,6 +28,7 @@ import {
   getShopOrdersAction,
   getShopOrderAction,
   updateShopOrderStatusAction,
+  expireStaleOrdersAction,
 } from '@/app/_actions/shop-orders';
 import { listProductImagesAction } from '@/app/_actions/product-images';
 import { getErpCurrenciesAction, getErpThbRateAction } from '@/app/_actions/fx';
@@ -2401,6 +2402,9 @@ export default function POS() {
 
   const fetchPickupCount = async () => {
     try {
+      // Orders nobody collected get cancelled here; the action throttles
+      // itself, so polling every 15s costs one sweep every ten minutes.
+      await expireStaleOrdersAction().catch(() => {});
       const [onlineRes, shopRes] = await Promise.all([
         getOnlineOrdersAction('pending', ''),
         getShopOrdersAction('', '', 'pending'),

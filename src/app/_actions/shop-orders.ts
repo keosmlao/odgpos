@@ -3,7 +3,7 @@
 import { runQuery } from "@/lib/db";
 import { getSession, requireSession } from "@/lib/session";
 import { ensureOnlineOrdersTable, ensureShopOrdersTable } from "@/lib/tables";
-import { openOrderReservationsSql } from "@/lib/reservations";
+import { ORDER_HOLD_DAYS, openOrderReservationsSql } from "@/lib/reservations";
 
 type Row = Record<string, unknown>;
 type ShopOrderItem = {
@@ -156,6 +156,41 @@ export async function createShopOrderAction(payload: Row): Promise<{ order_no: s
     "one"
   )) as Row;
   return { order_no: row.order_no as string, created_at: row.created_at };
+}
+
+/** Sweeps run at most this often per server process; the till asks on every poll. */
+const EXPIRY_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+let lastExpirySweep = 0;
+
+/**
+ * Cancels orders nobody came for. Their hold on stock has already lapsed after
+ * ORDER_HOLD_DAYS, so this puts the order's own status where the stock figures
+ * already are — one rule, rather than an order left open that reserves nothing.
+ */
+export async function expireStaleOrdersAction(): Promise<{ cancelled: number }> {
+  await requireSession();
+  const now = Date.now();
+  if (now - lastExpirySweep < EXPIRY_SWEEP_INTERVAL_MS) return { cancelled: 0 };
+  lastExpirySweep = now;
+
+  await ensureShopOrdersTable();
+  await ensureOnlineOrdersTable();
+  const note = `ຍົກເລີກອັດຕະໂນມັດ: ບໍ່ມາຮັບພາຍໃນ ${ORDER_HOLD_DAYS} ວັນ`;
+  let cancelled = 0;
+  for (const table of ["pos_shop_orders", "pos_online_orders"]) {
+    const rows = (await runQuery(
+      `UPDATE ${table}
+          SET status = 'cancelled',
+              updated_at = NOW(),
+              note = COALESCE(NULLIF(btrim(note), '') || ' | ', '') || $1
+        WHERE lower(status) IN ('pending', 'ready')
+          AND created_at <= NOW() - INTERVAL '${ORDER_HOLD_DAYS} days'
+        RETURNING order_no`,
+      [note]
+    )) as Row[];
+    cancelled += rows.length;
+  }
+  return { cancelled };
 }
 
 export async function updateShopOrderStatusAction(orderNo: string, statusRaw: string): Promise<Row> {

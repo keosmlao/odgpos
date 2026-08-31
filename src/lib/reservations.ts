@@ -6,8 +6,16 @@
  * picked or cancelled — nothing to reconcile, and nothing left holding stock
  * after a crash. Both order books count, since either can be pulled into the
  * till for pickup.
+ *
+ * A hold also lapses on its own after ORDER_HOLD_DAYS, so an order nobody
+ * collects cannot keep goods off the shelf forever; expireStaleOrdersAction
+ * marks those orders cancelled so the office sees the same thing the stock
+ * figures already do.
  */
 export const OPEN_ORDER_STATUSES = ["pending", "ready"];
+
+/** How long an order holds its stock before the shop takes it back. */
+export const ORDER_HOLD_DAYS = 3;
 
 /**
  * SQL yielding (code, qty) per reserved item. `excludeParam` is the placeholder
@@ -23,6 +31,7 @@ export function openOrderReservationsSql(excludeParam: string): string {
         CASE WHEN jsonb_typeof(o.items) = 'array' THEN o.items ELSE '[]'::jsonb END
       ) i
      WHERE lower(o.status) IN ('pending', 'ready')
+       AND o.created_at > NOW() - INTERVAL '${ORDER_HOLD_DAYS} days'
        AND (${excludeParam} = '' OR o.order_no <> ${excludeParam})`;
   return `SELECT code, SUM(qty) AS qty
             FROM (${perTable("pos_shop_orders")} UNION ALL ${perTable("pos_online_orders")}) r
